@@ -105,12 +105,22 @@ fi
 
 # --- Download & Install Xavi ---
 
-# Determine latest release URL
-# Simplified: Assume "latest" tag or use GitHub API to find it. 
-# For stability, using "latest" release asset pattern.
-DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/xavi-linux-$ARCH"
+# Determine highest semver release tag via GitHub API
+echo "Fetching latest release version..."
+VERSION=$(curl -s "https://api.github.com/repos/$REPO/releases" \
+    | grep -oP '"tag_name":\s*"v\K[0-9]+\.[0-9]+\.[0-9]+' \
+    | sort -t. -k1,1n -k2,2n -k3,3n \
+    | tail -1)
 
-CHECKSUM_URL="https://github.com/$REPO/releases/latest/download/checksums.txt"
+if [ -z "$VERSION" ]; then
+    echo "Error: Could not determine latest release version."
+    exit 1
+fi
+
+echo "Latest version: v$VERSION"
+
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/v$VERSION/xavi-linux-$ARCH"
+CHECKSUM_URL="https://github.com/$REPO/releases/download/v$VERSION/checksums.txt"
 
 echo "Downloading Xavi from $DOWNLOAD_URL..."
 curl -L -o /tmp/$BINARY_NAME $DOWNLOAD_URL
