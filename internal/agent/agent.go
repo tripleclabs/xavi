@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/3clabs/xavi/internal/cluster"
@@ -17,10 +18,7 @@ import (
 )
 
 const (
-	ConfigPath      = "/etc/tripleclabs/xavi.json"
-	SecretsPath     = "/etc/tripleclabs/xavi.secrets"
 	NetworkName     = "xavi-net"
-	AppConfigPath   = "/etc/tripleclabs/pulse.json"
 	AppConfigMount  = "/etc/tripleclabs/config.json"
 	TempConfigPath  = "/tmp/xavi-app-config.json"
 	CaddyConfigPath = "/tmp/caddy.json"
@@ -28,40 +26,48 @@ const (
 
 // Agent manages the local deployment.
 type Agent struct {
-	AuthBundle string // Optional initial bundle from CLI
-	Config     *config.Config
-	Secrets    *secrets.Secrets
-	docker     *container.Client
-	watcher    *config.Watcher
-	node       *cluster.Node
+	AuthBundle    string // Optional initial bundle from CLI
+	ConfigDir     string
+	ConfigPath    string
+	SecretsPath   string
+	AppConfigPath string
+
+	Config  *config.Config
+	Secrets *secrets.Secrets
+	docker  *container.Client
+	watcher *config.Watcher
+	node    *cluster.Node
 }
 
 // New creates a new Agent.
-func New(authBundle string) (*Agent, error) {
+func New(authBundle, configDir string) (*Agent, error) {
 	dockerCli, err := container.NewClient()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
 	}
 
+	if configDir == "" {
+		configDir = "/etc/tripleclabs"
+	}
+
+	configPath := filepath.Join(configDir, "xavi.json")
+	secretsPath := filepath.Join(configDir, "xavi.secrets")
+
 	// Load or generate secrets
-	sec, err := secrets.LoadOrGenerate(SecretsPath)
+	sec, err := secrets.LoadOrGenerate(secretsPath)
 	if err != nil {
-		// Log error but continue? Or fail?
-		// For now fail as we need secrets for DBs
-		// check if directory permission issue, maybe try local dir if /etc fails?
-		// For skeleton, just fail or log. Let's log and proceed with empty secrets to not crash if perm denied?
-		// No, let's return error, clean failure is better.
-		// Actually user might run this without sudo on dev machine.
-		// Let's try to load from local directory if absolute path fails?
-		// Stick to plan: return error.
-		return nil, fmt.Errorf("failed to load secrets from %s: %w", SecretsPath, err)
+		return nil, fmt.Errorf("failed to load secrets from %s: %w", secretsPath, err)
 	}
 
 	return &Agent{
-		AuthBundle: authBundle,
-		Secrets:    sec,
-		docker:     dockerCli,
-		watcher:    config.NewWatcher(ConfigPath, 5*time.Second),
+		AuthBundle:    authBundle,
+		ConfigDir:     configDir,
+		ConfigPath:    configPath,
+		SecretsPath:   secretsPath,
+		AppConfigPath: filepath.Join(configDir, "pulse.json"),
+		Secrets:       sec,
+		docker:        dockerCli,
+		watcher:       config.NewWatcher(configPath, 5*time.Second),
 	}, nil
 }
 
@@ -70,12 +76,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer a.docker.Close()
 
 	// 1. Try to load config from file
-	cfg, err := config.LoadFromFile(ConfigPath)
+	cfg, err := config.LoadFromFile(a.ConfigPath)
 	if err == nil {
-		log.Printf("Loaded configuration from %s", ConfigPath)
+		log.Printf("Loaded configuration from %s", a.ConfigPath)
 		a.applyConfig(ctx, cfg)
 	} else {
-		log.Printf("No config file at %s (or read error): %v", ConfigPath, err)
+		log.Printf("No config file at %s (or read error): %v", a.ConfigPath, err)
 		// 2. If no file, check CLI bundle
 		if a.AuthBundle != "" {
 			log.Println("Parsing auth bundle from CLI...")
@@ -417,7 +423,7 @@ func (a *Agent) ensureApp(ctx context.Context) error {
 	}
 
 	// Merge Config
-	if err := a.mergeAppConfig(AppConfigPath, TempConfigPath, pgHost, valkeyHost); err != nil {
+	if err := a.mergeAppConfig(a.AppConfigPath, TempConfigPath, pgHost, valkeyHost); err != nil {
 		log.Printf("Failed to merge app config: %v", err)
 		// Actually typical pattern: if missing config, app might crash. Let's return error.
 		return fmt.Errorf("failed to merge app config: %w", err)
