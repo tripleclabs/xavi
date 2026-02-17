@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/docker/docker/api/types"
 	docker_container "github.com/docker/docker/api/types/container"
@@ -229,45 +230,71 @@ func (c *Client) Logs(ctx context.Context, name string) error {
 
 func (c *Client) compareConfig(inspect types.ContainerJSON, opts RunOptions, hostConfig *docker_container.HostConfig, exposedPorts nat.PortSet) bool {
 	// 1. Image check
-	// Note: Comparing Image IDs is better than names/tags because tags can change.
-	// However, Xavi might want to pull latest. For now, let's compare the Image field directly.
-	if inspect.Config.Image != opts.Image && inspect.Image != opts.Image {
-		// check if inspect.Image is the resolved ID of opts.Image
-		// (omitted for simplicity, but let's assume direct match for now)
+	if inspect.Config.Image != opts.Image && inspect.Image != opts.Image && !strings.HasPrefix(inspect.Image, opts.Image) {
+		fmt.Printf("  [Divergence] Image mismatch: desired=%s, actual_config=%s, actual_id=%s\n", opts.Image, inspect.Config.Image, inspect.Image)
 		return false
 	}
 
 	// 2. Command check
 	if len(inspect.Config.Cmd) != len(opts.Cmd) {
-		return false
+		// Common case: requested nil/empty but docker returns something or vice versa
+		if !(len(opts.Cmd) == 0 && len(inspect.Config.Cmd) == 0) {
+			fmt.Printf("  [Divergence] Command length mismatch: desired=%v, actual=%v\n", opts.Cmd, inspect.Config.Cmd)
+			return false
+		}
 	}
 	for i := range opts.Cmd {
 		if inspect.Config.Cmd[i] != opts.Cmd[i] {
+			fmt.Printf("  [Divergence] Command mismatch at index %d: desired=%s, actual=%s\n", i, opts.Cmd[i], inspect.Config.Cmd[i])
 			return false
 		}
 	}
 
 	// 3. Env check
 	if !compareSlices(inspect.Config.Env, opts.Env) {
+		fmt.Printf("  [Divergence] Env mismatch: desired=%v, actual=%v\n", opts.Env, inspect.Config.Env)
 		return false
 	}
 
 	// 4. Mounts check (Binds)
-	if !compareSlices(inspect.HostConfig.Binds, opts.Mounts) {
+	// Docker often suffixes mounts with :rw, let's normalize
+	normalizedActual := make([]string, len(inspect.HostConfig.Binds))
+	for i, b := range inspect.HostConfig.Binds {
+		normalizedActual[i] = strings.TrimSuffix(b, ":rw")
+	}
+	if !compareSlices(normalizedActual, opts.Mounts) {
+		fmt.Printf("  [Divergence] Mounts mismatch: desired=%v, actual_normalized=%v\n", opts.Mounts, normalizedActual)
 		return false
 	}
 
 	// 5. Ports check
 	if len(inspect.HostConfig.PortBindings) != len(hostConfig.PortBindings) {
+		fmt.Printf("  [Divergence] Port count mismatch: desired_count=%d, actual_count=%d\n", len(hostConfig.PortBindings), len(inspect.HostConfig.PortBindings))
 		return false
 	}
 	for k, v := range hostConfig.PortBindings {
 		existing, ok := inspect.HostConfig.PortBindings[k]
-		if !ok || len(existing) != len(v) {
+		if !ok {
+			fmt.Printf("  [Divergence] Port %s missing in actual container\n", k)
+			return false
+		}
+		if len(existing) != len(v) {
+			fmt.Printf("  [Divergence] Port %s binding count mismatch\n", k)
 			return false
 		}
 		for i := range v {
-			if existing[i].HostIP != v[i].HostIP || existing[i].HostPort != v[i].HostPort {
+			// Docker might return "0.0.0.0" even if we didn't specify it, or vice versa
+			actualIP := existing[i].HostIP
+			if actualIP == "" {
+				actualIP = "0.0.0.0"
+			}
+			desiredIP := v[i].HostIP
+			if desiredIP == "" {
+				desiredIP = "0.0.0.0"
+			}
+
+			if actualIP != desiredIP || existing[i].HostPort != v[i].HostPort {
+				fmt.Printf("  [Divergence] Port %s binding mismatch: desired=%s:%s, actual=%s:%s\n", k, desiredIP, v[i].HostPort, actualIP, existing[i].HostPort)
 				return false
 			}
 		}
