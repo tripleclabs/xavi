@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 
 	"github.com/docker/docker/api/types"
 	docker_container "github.com/docker/docker/api/types/container"
@@ -139,6 +140,28 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 		}
 	}
 
+	// CONFIG CONVERGENCE CHECK
+	inspect, err := c.cli.ContainerInspect(ctx, name)
+	if err == nil {
+		// Container exists, check if it matches desired state
+		matches := c.compareConfig(inspect, opts, hostConfig, exposedPorts)
+		if matches {
+			if inspect.State.Running {
+				fmt.Printf("Container %s already running and matches desired state, skipping.\n", name)
+				return nil
+			}
+			fmt.Printf("Container %s exists and matches desired state but is not running. Starting...\n", name)
+			return c.cli.ContainerStart(ctx, inspect.ID, docker_container.StartOptions{})
+		}
+
+		fmt.Printf("Container %s configuration mismatch. Recreating...\n", name)
+		if err := c.StopContainer(ctx, name); err != nil {
+			return fmt.Errorf("failed to remove old container %s: %w", name, err)
+		}
+	} else if !client.IsErrNotFound(err) {
+		return fmt.Errorf("failed to inspect container %s: %w", name, err)
+	}
+
 	resp, err := c.cli.ContainerCreate(ctx, &docker_container.Config{
 		Image:        image,
 		Env:          opts.Env,
@@ -202,6 +225,92 @@ func (c *Client) Logs(ctx context.Context, name string) error {
 	defer out.Close()
 	stdcopy.StdCopy(os.Stdout, os.Stderr, out)
 	return nil
+}
+
+func (c *Client) compareConfig(inspect types.ContainerJSON, opts RunOptions, hostConfig *docker_container.HostConfig, exposedPorts nat.PortSet) bool {
+	// 1. Image check
+	// Note: Comparing Image IDs is better than names/tags because tags can change.
+	// However, Xavi might want to pull latest. For now, let's compare the Image field directly.
+	if inspect.Config.Image != opts.Image && inspect.Image != opts.Image {
+		// check if inspect.Image is the resolved ID of opts.Image
+		// (omitted for simplicity, but let's assume direct match for now)
+		return false
+	}
+
+	// 2. Command check
+	if len(inspect.Config.Cmd) != len(opts.Cmd) {
+		return false
+	}
+	for i := range opts.Cmd {
+		if inspect.Config.Cmd[i] != opts.Cmd[i] {
+			return false
+		}
+	}
+
+	// 3. Env check
+	if !compareSlices(inspect.Config.Env, opts.Env) {
+		return false
+	}
+
+	// 4. Mounts check (Binds)
+	if !compareSlices(inspect.HostConfig.Binds, opts.Mounts) {
+		return false
+	}
+
+	// 5. Ports check
+	if len(inspect.HostConfig.PortBindings) != len(hostConfig.PortBindings) {
+		return false
+	}
+	for k, v := range hostConfig.PortBindings {
+		existing, ok := inspect.HostConfig.PortBindings[k]
+		if !ok || len(existing) != len(v) {
+			return false
+		}
+		for i := range v {
+			if existing[i].HostIP != v[i].HostIP || existing[i].HostPort != v[i].HostPort {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+func compareSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		// Filter out standard docker envs that might be injected (PATH, etc) if needed,
+		// but for Xavi we'll assume exact match or a more lax check.
+		// Let's do a semi-lax check: ensure all b elements are in a.
+		count := 0
+		for _, target := range b {
+			found := false
+			for _, actual := range a {
+				if actual == target {
+					found = true
+					break
+				}
+			}
+			if found {
+				count++
+			}
+		}
+		return count == len(b)
+	}
+
+	// Sort and compare? Or just check contents.
+	// Since order might matter or differ, let's just check if they have the same elements.
+	sa := make([]string, len(a))
+	copy(sa, a)
+	sb := make([]string, len(b))
+	copy(sb, b)
+	sort.Strings(sa)
+	sort.Strings(sb)
+	for i := range sa {
+		if sa[i] != sb[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Close closes the underlying docker client connection.
