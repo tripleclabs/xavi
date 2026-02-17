@@ -19,7 +19,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Build Linux AMD64
         run: GOOS=linux GOARCH=amd64 go build -v -o xavi-linux-amd64 ./cmd/xavi

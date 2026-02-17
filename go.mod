@@ -1,6 +1,6 @@
 module github.com/3clabs/xavi
 
-go 1.25.3
+go 1.26.0
 
 require (
 	github.com/docker/docker v26.1.3+incompatible
