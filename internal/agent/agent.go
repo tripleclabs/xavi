@@ -296,7 +296,7 @@ postgres:
 backends:
 %s`, pgConn, s3Backends)
 
-	return os.WriteFile(TempBackupBotConfigPath, []byte(yamlContent), 0644)
+	return os.WriteFile(TempBackupBotConfigPath, []byte(yamlContent), 0600)
 }
 
 func (a *Agent) ensureValkey(ctx context.Context) error {
@@ -562,7 +562,7 @@ func (a *Agent) mergeAppConfig(sourcePath, destPath, pgHost, valkeyHost string) 
 		return fmt.Errorf("failed to marshal merged app config: %w", err)
 	}
 
-	if err := os.WriteFile(destPath, newData, 0644); err != nil {
+	if err := os.WriteFile(destPath, newData, 0600); err != nil {
 		return fmt.Errorf("failed to write merged config to %s: %w", destPath, err)
 	}
 
@@ -655,7 +655,7 @@ func (a *Agent) generateCaddyJSON(domain, targetHost string) error {
 }`
 	content := fmt.Sprintf(jsonTpl, domain, targetHost, targetHost)
 
-	if err := os.WriteFile(CaddyConfigPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(CaddyConfigPath, []byte(content), 0600); err != nil {
 		return fmt.Errorf("failed to write Caddy JSON: %w", err)
 	}
 	return nil

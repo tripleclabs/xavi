@@ -95,8 +95,30 @@ fi
 # For stability, using "latest" release asset pattern.
 DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/xavi-linux-$ARCH"
 
+CHECKSUM_URL="https://github.com/$REPO/releases/latest/download/checksums.txt"
+
 echo "Downloading Xavi from $DOWNLOAD_URL..."
 curl -L -o /tmp/$BINARY_NAME $DOWNLOAD_URL
+
+echo "Verifying checksum..."
+curl -L -o /tmp/xavi-checksums.txt $CHECKSUM_URL
+EXPECTED=$(grep "xavi-linux-$ARCH" /tmp/xavi-checksums.txt | awk '{print $1}')
+ACTUAL=$(sha256sum /tmp/$BINARY_NAME | awk '{print $1}')
+rm -f /tmp/xavi-checksums.txt
+
+if [ -z "$EXPECTED" ]; then
+    echo "Error: Could not find checksum for xavi-linux-$ARCH in checksums.txt"
+    exit 1
+fi
+
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+    echo "Error: Checksum mismatch!"
+    echo "  Expected: $EXPECTED"
+    echo "  Actual:   $ACTUAL"
+    rm -f /tmp/$BINARY_NAME
+    exit 1
+fi
+echo "Checksum verified."
 
 echo "Installing to $INSTALL_DIR..."
 sudo mv /tmp/$BINARY_NAME $INSTALL_DIR/$BINARY_NAME

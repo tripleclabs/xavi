@@ -19,7 +19,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
 
       - name: Build Linux AMD64
         run: GOOS=linux GOARCH=amd64 go build -v -o xavi-linux-amd64 ./cmd/xavi
@@ -27,12 +27,16 @@ jobs:
       - name: Build Linux ARM64
         run: GOOS=linux GOARCH=arm64 go build -v -o xavi-linux-arm64 ./cmd/xavi
 
+      - name: Generate checksums
+        run: sha256sum xavi-linux-amd64 xavi-linux-arm64 > checksums.txt
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
             xavi-linux-amd64
             xavi-linux-arm64
+            checksums.txt
           draft: false
           prerelease: false
         env:
