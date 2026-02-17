@@ -1,6 +1,6 @@
 # Xavi
 
-Xavi is a lightweight, secure edge infrastructure agent written in Go. It manages the lifecycle of local Docker containers (Postgres, Valkey, App) and coordinates with other Xavi nodes to form a distributed mesh using a gossip protocol.
+Xavi is a lightweight, secure edge infrastructure agent written in Go. It manages the lifecycle of local containers (Postgres, Valkey, App, Caddy, BackupBot) and coordinates with other Xavi nodes to form a distributed mesh using a gossip protocol.
 
 ## Features
 
@@ -22,15 +22,23 @@ Xavi is a lightweight, secure edge infrastructure agent written in Go. It manage
 
 ### Prerequisites
 
--   Docker Engine installed and running.
--   Linux (AMD64/ARM64) or macOS.
+-   Podman or Docker installed and running.
+-   Linux (AMD64/ARM64).
 
 ### Installation
 
-Download the latest release binary for your architecture and place it in your path (e.g., `/usr/local/bin/xavi`).
+The install script detects your architecture, downloads the binary with checksum verification, and sets up a systemd service. It will use an existing Podman or Docker installation, or offer to install Podman if neither is found.
+
+**Interactive:**
 
 ```bash
-chmod +x xavi
+curl -fsSL https://raw.githubusercontent.com/tripleclabs/xavi/main/install.sh | bash
+```
+
+**Unattended (auto-accepts Podman install if needed):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tripleclabs/xavi/main/install.sh | bash -s -- -y
 ```
 
 ### First Run
@@ -96,13 +104,20 @@ On the first run, Xavi generates a secrets file at `/etc/tripleclabs/xavi.secret
 ```json
 {
   "postgres_password": "...",
+  "postgres_db_name": "pulse",
+  "postgres_db_user": "pulse",
+  "replication_password": "...",
   "valkey_password": "...",
-  "cluster_key": "..."
+  "cluster_key": "...",
+  "app_encryption_key": "...",
+  "app_token_secrets": ["..."]
 }
 ```
 
--   **Postgres/Valkey Passwords**: Injected into containers and dependent services.
+-   **Postgres Credentials**: Password, database name, and user — injected into the Postgres container and connection URLs.
+-   **Valkey Password**: Injected into the Valkey container and app configuration.
 -   **Cluster Key**: A 32-byte base64 key used to encrypt all gossip traffic.
+-   **App Encryption Key / Token Secrets**: Injected into the app configuration for application-level encryption and token signing.
 
 ### ⚠️ Important: Multi-Node Setup
 To form a secure cluster, **you must copy the `xavi.secrets` file from the first node to all other nodes**. 

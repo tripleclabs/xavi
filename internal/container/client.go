@@ -132,9 +132,8 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 	exposedPorts := make(nat.PortSet)
 	portBindings := make(nat.PortMap)
 	for _, p := range opts.Ports {
-		var hostPort, containerPort string
-		n, _ := fmt.Sscanf(p, "%[^:]:%s", &hostPort, &containerPort)
-		if n == 2 {
+		hostPort, containerPort, ok := strings.Cut(p, ":")
+		if ok {
 			cPort := nat.Port(containerPort + "/tcp")
 			exposedPorts[cPort] = struct{}{}
 			portBindings[cPort] = []nat.PortBinding{

@@ -5,6 +5,15 @@ REPO="tripleclabs/xavi"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="xavi"
 CONFIG_DIR="/etc/tripleclabs"
+AUTO_YES=false
+
+# Parse flags
+while getopts "y" opt; do
+    case $opt in
+        y) AUTO_YES=true ;;
+        *) echo "Usage: $0 [-y]"; exit 1 ;;
+    esac
+done
 
 # Detect Architecture
 ARCH=$(uname -m)
@@ -25,67 +34,73 @@ echo "Detected architecture: $ARCH"
 
 # --- Container Engine Detection & Installation ---
 
-# Detect Package Manager
-PKG_MGR=""
-INSTALL_CMD=""
-
-if command -v apt-get &> /dev/null; then
-    PKG_MGR="apt-get"
-    INSTALL_CMD="apt-get update && apt-get install -y"
-elif command -v dnf &> /dev/null; then
-    PKG_MGR="dnf"
-    INSTALL_CMD="dnf install -y"
-elif command -v yum &> /dev/null; then
-    PKG_MGR="yum"
-    INSTALL_CMD="yum install -y"
-elif command -v pacman &> /dev/null; then
-    PKG_MGR="pacman"
-    INSTALL_CMD="pacman -Sy --noconfirm"
-elif command -v zypper &> /dev/null; then
-    PKG_MGR="zypper"
-    INSTALL_CMD="zypper install -y"
-fi
-
-# Try to ensure Podman is installed
-if ! command -v podman &> /dev/null; then
-    echo "Podman not found."
-    if [ -n "$INSTALL_CMD" ]; then
-        echo "Attempting to install Podman using $PKG_MGR..."
-        EXT_CMD="sudo $INSTALL_CMD podman"
-        echo "Running: $EXT_CMD"
-        eval $EXT_CMD
-    else
-        echo "Warning: Could not detect package manager to install Podman automatically."
-    fi
-fi
-
-# Determine Engine Configuration
 SERVICE_REQUIRES=""
 SERVICE_AFTER=""
 ENV_VARS=""
 
 if command -v podman &> /dev/null; then
-    echo "Using Podman as container engine."
-    
-    # Enable Podman Socket
+    echo "Found Podman. Using Podman as container engine."
+
     echo "Enabling podman.socket..."
     sudo systemctl enable --now podman.socket
 
     SERVICE_REQUIRES="podman.socket"
     SERVICE_AFTER="network-online.target podman.socket"
-    # Set DOCKER_HOST so the generic Docker client libraries work with Podman
     ENV_VARS="Environment=DOCKER_HOST=unix:///run/podman/podman.sock"
 
 elif command -v docker &> /dev/null; then
-    echo "Podman not available. Falling back to Docker."
+    echo "Found Docker. Using Docker as container engine."
+
     SERVICE_REQUIRES="docker.service"
     SERVICE_AFTER="network-online.target docker.service"
-    ENV_VARS="" # Standard Docker socket is default
 
 else
-    echo "Error: Neither Podman nor Docker is available, and Podman installation failed."
-    echo "Please install Podman or Docker manually and rerun this script."
-    exit 1
+    echo "No container engine found."
+
+    # Ask to install podman (or auto-accept with -y)
+    if [ "$AUTO_YES" = true ]; then
+        INSTALL_PODMAN=true
+    else
+        read -p "Would you like to install Podman? [y/N] " answer
+        case "$answer" in
+            [yY]|[yY][eE][sS]) INSTALL_PODMAN=true ;;
+            *) INSTALL_PODMAN=false ;;
+        esac
+    fi
+
+    if [ "$INSTALL_PODMAN" = true ]; then
+        # Detect package manager
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y podman
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y podman
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y podman
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -Sy --noconfirm podman
+        elif command -v zypper &> /dev/null; then
+            sudo zypper install -y podman
+        else
+            echo "Error: Could not detect a supported package manager to install Podman."
+            echo "Please install Podman or Docker manually and rerun this script."
+            exit 1
+        fi
+
+        if ! command -v podman &> /dev/null; then
+            echo "Error: Podman installation failed."
+            exit 1
+        fi
+
+        echo "Enabling podman.socket..."
+        sudo systemctl enable --now podman.socket
+
+        SERVICE_REQUIRES="podman.socket"
+        SERVICE_AFTER="network-online.target podman.socket"
+        ENV_VARS="Environment=DOCKER_HOST=unix:///run/podman/podman.sock"
+    else
+        echo "Error: A container engine is required. Please install Podman or Docker and rerun this script."
+        exit 1
+    fi
 fi
 
 # --- Download & Install Xavi ---
