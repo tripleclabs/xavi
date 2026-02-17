@@ -21,8 +21,9 @@ import (
 
 // Client wraps the docker client to provide a simplified interface for Xavi.
 type Client struct {
-	cli          *client.Client
-	registryAuth string
+	cli             *client.Client
+	registryAuth    string
+	registryAddress string
 }
 
 // NewClient creates a new docker client from environment variables.
@@ -53,6 +54,7 @@ func (c *Client) Login(ctx context.Context, username, password, registryAddr str
 		return fmt.Errorf("failed to marshal auth config: %w", err)
 	}
 	c.registryAuth = base64.StdEncoding.EncodeToString(encodedJSON)
+	c.registryAddress = registryAddr
 
 	return nil
 }
@@ -103,8 +105,12 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 	_, _, err := c.cli.ImageInspectWithRaw(ctx, image)
 	if client.IsErrNotFound(err) {
 		fmt.Printf("Pulling image %s...\n", image)
+		pullAuth := ""
+		if c.registryAddress != "" && strings.HasPrefix(image, c.registryAddress+"/") {
+			pullAuth = c.registryAuth
+		}
 		reader, err := c.cli.ImagePull(ctx, image, types.ImagePullOptions{
-			RegistryAuth: c.registryAuth,
+			RegistryAuth: pullAuth,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to pull image %s: %w", image, err)
