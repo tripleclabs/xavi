@@ -18,11 +18,9 @@ import (
 )
 
 const (
-	NetworkName             = "xavi-net"
-	AppConfigMount          = "/etc/tripleclabs/config.json"
-	TempConfigPath          = "/tmp/xavi-app-config.json"
-	CaddyConfigPath         = "/tmp/caddy.json"
-	TempBackupBotConfigPath = "/tmp/backupbot.yaml"
+	NetworkName    = "xavi-net"
+	AppConfigMount = "/etc/tripleclabs/config.json"
+	RuntimeDir     = "/var/lib/xavi/runtime"
 )
 
 // Agent manages the local deployment.
@@ -33,6 +31,12 @@ type Agent struct {
 	SecretsPath      string
 	AppConfigPath    string
 	BackupConfigPath string
+	RuntimeDir       string
+
+	// Runtime file paths (generated configs)
+	TempConfigPath          string
+	CaddyConfigPath         string
+	TempBackupBotConfigPath string
 
 	Config  *config.Config
 	Secrets *secrets.Secrets
@@ -55,6 +59,12 @@ func New(authBundle, configDir string) (*Agent, error) {
 	configPath := filepath.Join(configDir, "xavi.json")
 	secretsPath := filepath.Join(configDir, "xavi.secrets")
 
+	// Create runtime directory for generated configs
+	runtimeDir := RuntimeDir
+	if err := os.MkdirAll(runtimeDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create runtime directory %s: %w", runtimeDir, err)
+	}
+
 	// Load or generate secrets
 	sec, err := secrets.LoadOrGenerate(secretsPath)
 	if err != nil {
@@ -62,15 +72,19 @@ func New(authBundle, configDir string) (*Agent, error) {
 	}
 
 	return &Agent{
-		AuthBundle:       authBundle,
-		ConfigDir:        configDir,
-		ConfigPath:       configPath,
-		SecretsPath:      secretsPath,
-		AppConfigPath:    filepath.Join(configDir, "pulse.json"),
-		BackupConfigPath: filepath.Join(configDir, "backup.json"),
-		Secrets:          sec,
-		docker:           dockerCli,
-		watcher:          config.NewWatcher(configPath, 5*time.Second),
+		AuthBundle:              authBundle,
+		ConfigDir:               configDir,
+		ConfigPath:              configPath,
+		SecretsPath:             secretsPath,
+		AppConfigPath:           filepath.Join(configDir, "pulse.json"),
+		BackupConfigPath:        filepath.Join(configDir, "backup.json"),
+		RuntimeDir:              runtimeDir,
+		TempConfigPath:          filepath.Join(runtimeDir, "app-config.json"),
+		CaddyConfigPath:         filepath.Join(runtimeDir, "caddy.json"),
+		TempBackupBotConfigPath: filepath.Join(runtimeDir, "backupbot.yaml"),
+		Secrets:                 sec,
+		docker:                  dockerCli,
+		watcher:                 config.NewWatcher(configPath, 5*time.Second),
 	}, nil
 }
 
@@ -231,7 +245,7 @@ func (a *Agent) ensureBackupBot(ctx context.Context) error {
 		Name:  "xavi-backupbot",
 		Cmd:   []string{"backupbot", "--config", "/etc/backupbot/config.yaml"},
 		Mounts: []string{
-			fmt.Sprintf("%s:/etc/backupbot/config.yaml", TempBackupBotConfigPath),
+			fmt.Sprintf("%s:/etc/backupbot/config.yaml", a.TempBackupBotConfigPath),
 		},
 		Network: NetworkName,
 	}
@@ -296,7 +310,7 @@ postgres:
 backends:
 %s`, pgConn, s3Backends)
 
-	return os.WriteFile(TempBackupBotConfigPath, []byte(yamlContent), 0600)
+	return os.WriteFile(a.TempBackupBotConfigPath, []byte(yamlContent), 0600)
 }
 
 func (a *Agent) ensureValkey(ctx context.Context) error {
@@ -482,7 +496,7 @@ func (a *Agent) ensureApp(ctx context.Context) error {
 	}
 
 	// Merge Config
-	if err := a.mergeAppConfig(a.AppConfigPath, TempConfigPath, pgHost, valkeyHost); err != nil {
+	if err := a.mergeAppConfig(a.AppConfigPath, a.TempConfigPath, pgHost, valkeyHost); err != nil {
 		log.Printf("Failed to merge app config: %v", err)
 		// Actually typical pattern: if missing config, app might crash. Let's return error.
 		return fmt.Errorf("failed to merge app config: %w", err)
@@ -492,7 +506,7 @@ func (a *Agent) ensureApp(ctx context.Context) error {
 		Image: a.Config.Images.App,
 		Name:  "xavi-app",
 		Mounts: []string{
-			fmt.Sprintf("%s:%s", TempConfigPath, AppConfigMount),
+			fmt.Sprintf("%s:%s", a.TempConfigPath, AppConfigMount),
 		},
 		Network: NetworkName,
 	}
@@ -601,7 +615,7 @@ func (a *Agent) ensureCaddy(ctx context.Context) error {
 			"8883:8883",
 		},
 		Mounts: []string{
-			fmt.Sprintf("%s:/etc/caddy/config.json", CaddyConfigPath),
+			fmt.Sprintf("%s:/etc/caddy/config.json", a.CaddyConfigPath),
 		},
 		Network: NetworkName,
 	}
@@ -658,7 +672,7 @@ func (a *Agent) generateCaddyJSON(domain, targetHost string) error {
 }`
 	content := fmt.Sprintf(jsonTpl, domain, targetHost, targetHost)
 
-	if err := os.WriteFile(CaddyConfigPath, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(a.CaddyConfigPath, []byte(content), 0600); err != nil {
 		return fmt.Errorf("failed to write Caddy JSON: %w", err)
 	}
 	return nil
