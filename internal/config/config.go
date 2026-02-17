@@ -61,8 +61,6 @@ type PostgresConfig struct {
 	MaxRAM      string              `json:"max_ram"`
 	MaxCPU      string              `json:"max_cpu"`
 	StoragePath string              `json:"storage_path"`
-	DBName      string              `json:"db_name,omitempty"`   // Database to create (default: "postgres")
-	DBUser      string              `json:"db_user,omitempty"`   // User to create (default: "postgres")
 	Replication PostgresReplication `json:"replication,omitempty"`
 }
 

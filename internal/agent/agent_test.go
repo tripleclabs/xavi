@@ -43,6 +43,8 @@ func TestMergeAppConfig(t *testing.T) {
 	agent := &Agent{
 		Secrets: &secrets.Secrets{
 			PostgresPassword: "new-pg-secret",
+			PostgresDBName:   "pulse",
+			PostgresDBUser:   "pulse",
 			ValkeyPassword:   "new-valkey-secret",
 			AppEncryptionKey: "new-encryption-key",
 			AppTokenSecrets:  []string{"new-token-secret-1"},
@@ -72,7 +74,7 @@ func TestMergeAppConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("postgresql key missing or invalid type")
 	}
-	expectedPG := "postgres://postgres:new-pg-secret@10.0.0.1:5432/postgres?sslmode=disable"
+	expectedPG := "postgres://pulse:new-pg-secret@10.0.0.1:5432/pulse?sslmode=disable"
 	if pg["url"] != expectedPG {
 		t.Errorf("postgresql.url = %v, want %v", pg["url"], expectedPG)
 	}

@@ -13,6 +13,8 @@ import (
 // Secrets holds the generated secrets for the deployment.
 type Secrets struct {
 	PostgresPassword    string   `json:"postgres_password"`
+	PostgresDBName      string   `json:"postgres_db_name"`
+	PostgresDBUser      string   `json:"postgres_db_user"`
 	ReplicationPassword string   `json:"replication_password"`
 	ValkeyPassword      string   `json:"valkey_password"`
 	ClusterKey          string   `json:"cluster_key"` // Base64 encoded 32-byte key
@@ -27,6 +29,14 @@ func LoadOrGenerate(path string) (*Secrets, error) {
 	if err == nil {
 		// Check if any new fields are missing, if so generate them and save
 		updated := false
+		if s.PostgresDBName == "" {
+			s.PostgresDBName = "pulse"
+			updated = true
+		}
+		if s.PostgresDBUser == "" {
+			s.PostgresDBUser = "pulse"
+			updated = true
+		}
 		if s.ReplicationPassword == "" {
 			s.ReplicationPassword = generateRandomString(32)
 			updated = true
@@ -61,6 +71,8 @@ func LoadOrGenerate(path string) (*Secrets, error) {
 	// Generate new secrets
 	s = &Secrets{
 		PostgresPassword:    generateRandomString(32),
+		PostgresDBName:      "pulse",
+		PostgresDBUser:      "pulse",
 		ReplicationPassword: generateRandomString(32),
 		ValkeyPassword:      generateRandomString(32),
 		ClusterKey:          generateRandomBytesBase64(32),
