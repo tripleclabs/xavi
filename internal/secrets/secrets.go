@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 // Secrets holds the generated secrets for the deployment.
 type Secrets struct {
 	PostgresPassword string `json:"postgres_password"`
+	ValkeyPassword   string `json:"valkey_password"`
+	ClusterKey       string `json:"cluster_key"` // Base64 encoded 32-byte key
 }
 
 // LoadOrGenerate loads secrets from the given path.
@@ -19,6 +22,21 @@ type Secrets struct {
 func LoadOrGenerate(path string) (*Secrets, error) {
 	s, err := load(path)
 	if err == nil {
+		// Check if any new fields are missing, if so generate them and save
+		updated := false
+		if s.ValkeyPassword == "" {
+			s.ValkeyPassword = generateRandomString(32)
+			updated = true
+		}
+		if s.ClusterKey == "" {
+			s.ClusterKey = generateRandomBytesBase64(32)
+			updated = true
+		}
+		if updated {
+			if err := save(path, s); err != nil {
+				return nil, fmt.Errorf("failed to save updated secrets: %w", err)
+			}
+		}
 		return s, nil
 	}
 	if !os.IsNotExist(err) {
@@ -28,6 +46,8 @@ func LoadOrGenerate(path string) (*Secrets, error) {
 	// Generate new secrets
 	s = &Secrets{
 		PostgresPassword: generateRandomString(32),
+		ValkeyPassword:   generateRandomString(32),
+		ClusterKey:       generateRandomBytesBase64(32),
 	}
 
 	if err := save(path, s); err != nil {
@@ -74,10 +94,15 @@ func save(path string, s *Secrets) error {
 func generateRandomString(length int) string {
 	bytes := make([]byte, length/2)
 	if _, err := rand.Read(bytes); err != nil {
-		// Fallback or panic? For a security critical feature, panic might be safer than weak randomness,
-		// but let's just return a timestamp based fallback for robustness in this skeleton?
-		// No, let's panic, if rand fails we have bigger problems.
 		panic(fmt.Sprintf("failed to read random bytes: %v", err))
 	}
 	return hex.EncodeToString(bytes)
+}
+
+func generateRandomBytesBase64(length int) string {
+	bytes := make([]byte, length)
+	if _, err := rand.Read(bytes); err != nil {
+		panic(fmt.Sprintf("failed to read random bytes: %v", err))
+	}
+	return base64.StdEncoding.EncodeToString(bytes)
 }

@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"time"
 
+	"github.com/3clabs/xavi/internal/cluster"
 	"github.com/3clabs/xavi/internal/config"
 	"github.com/3clabs/xavi/internal/container"
 	"github.com/3clabs/xavi/internal/secrets"
@@ -24,6 +26,7 @@ type Agent struct {
 	Secrets    *secrets.Secrets
 	docker     *container.Client
 	watcher    *config.Watcher
+	node       *cluster.Node
 }
 
 // New creates a new Agent.
@@ -105,6 +108,37 @@ func (a *Agent) Run(ctx context.Context) error {
 func (a *Agent) applyConfig(ctx context.Context, cfg *config.Config) {
 	a.Config = cfg
 
+	// Initialize cluster if config present and not already running
+	if a.node == nil && (len(cfg.Cluster.Peers) > 0 || cfg.Cluster.BindPort > 0 || len(cfg.Services) > 0) {
+		log.Println("Initializing cluster node...")
+
+		var secretKey []byte
+		if a.Secrets != nil && a.Secrets.ClusterKey != "" {
+			key, err := base64.StdEncoding.DecodeString(a.Secrets.ClusterKey)
+			if err != nil {
+				log.Printf("Failed to decode cluster key: %v", err)
+			} else {
+				secretKey = key
+			}
+		}
+
+		nodeCfg := cluster.Config{
+			BindPort:  cfg.Cluster.BindPort,
+			Peers:     cfg.Cluster.Peers,
+			Services:  cfg.Services,
+			SecretKey: secretKey,
+		}
+		node, err := cluster.New(nodeCfg)
+		if err != nil {
+			log.Printf("Failed to initialize cluster: %v", err)
+		} else {
+			a.node = node
+		}
+	} else if a.node != nil {
+		// TODO: Update node services/peers dynamically?
+		// For now simple static init
+	}
+
 	// Perform Docker Login if credentials are present
 	if cfg.Docker.Username != "" && cfg.Docker.Password != "" && cfg.Docker.Registry != "" {
 		log.Printf("Authenticating with registry %s...", cfg.Docker.Registry)
@@ -133,11 +167,6 @@ func (a *Agent) ensureInfrastructure(ctx context.Context) error {
 		return fmt.Errorf("failed to ensure network: %w", err)
 	}
 
-	// Example: Ensure Caddy is running if configured
-	// if a.Config.Images.Caddy != "" {
-	// 	 return a.docker.RunContainer(ctx, a.Config.Images.Caddy, "xavi-caddy")
-	// }
-
 	if err := a.ensureValkey(ctx); err != nil {
 		log.Printf("Failed to ensure Valkey: %v", err)
 	}
@@ -146,10 +175,57 @@ func (a *Agent) ensureInfrastructure(ctx context.Context) error {
 		log.Printf("Failed to ensure Postgres: %v", err)
 	}
 
+	if err := a.ensureApp(ctx); err != nil {
+		log.Printf("Failed to ensure App: %v", err)
+	}
+
+	if err := a.ensureBackupBot(ctx); err != nil {
+		log.Printf("Failed to ensure BackupBot: %v", err)
+	}
+
 	return nil
 }
 
+func (a *Agent) ensureBackupBot(ctx context.Context) error {
+	// Runs alongside Postgres
+	if !a.isServiceEnabled("postgres") {
+		return nil
+	}
+
+	image := a.Config.Images.BackupBot
+	if image == "" {
+		image = "wearecococo/backupbot:latest"
+	}
+
+	opts := container.RunOptions{
+		Image: image,
+		Name:  "xavi-backupbot",
+		Env: []string{
+			"POSTGRES_HOST=xavi-postgres",
+			fmt.Sprintf("POSTGRES_PASSWORD=%s", a.Secrets.PostgresPassword),
+		},
+		Network: NetworkName,
+	}
+
+	return a.docker.RunContainer(ctx, opts)
+}
+
+func (a *Agent) isServiceEnabled(name string) bool {
+	if len(a.Config.Services) == 0 {
+		return true // Default to all if not specified
+	}
+	for _, s := range a.Config.Services {
+		if s == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Agent) ensureValkey(ctx context.Context) error {
+	if !a.isServiceEnabled("valkey") {
+		return nil
+	}
 	if a.Config.Images.Valkey == "" {
 		return nil
 	}
@@ -164,12 +240,16 @@ func (a *Agent) ensureValkey(ctx context.Context) error {
 		Memory:   mem,
 		NanoCPUs: cpu,
 		Network:  NetworkName,
+		Cmd:      []string{"valkey-server", "--requirepass", a.Secrets.ValkeyPassword},
 	}
 
 	return a.docker.RunContainer(ctx, opts)
 }
 
 func (a *Agent) ensurePostgres(ctx context.Context) error {
+	if !a.isServiceEnabled("postgres") {
+		return nil
+	}
 	if a.Config.Images.Postgres == "" {
 		return nil
 	}
@@ -190,6 +270,57 @@ func (a *Agent) ensurePostgres(ctx context.Context) error {
 		Memory:   mem,
 		NanoCPUs: cpu,
 		Network:  NetworkName,
+	}
+
+	return a.docker.RunContainer(ctx, opts)
+}
+
+func (a *Agent) ensureApp(ctx context.Context) error {
+	if !a.isServiceEnabled("app") {
+		return nil
+	}
+	if a.Config.Images.App == "" {
+		return nil
+	}
+
+	// Determine Postgres Host
+	pgHost := "localhost"
+	if a.isServiceEnabled("postgres") {
+		pgHost = "xavi-postgres" // Local (on same network)
+	} else if a.node != nil {
+		// Remote discovery
+		addr := a.node.FindServiceAddr("postgres")
+		if addr != "" {
+			pgHost = addr
+			log.Printf("Discovered Postgres at %s", addr)
+		} else {
+			log.Println("Waiting for Postgres to appear in cluster...")
+			return nil // Retry later
+		}
+	}
+
+	// Determine Valkey Host
+	valkeyHost := "localhost"
+	if a.isServiceEnabled("valkey") {
+		valkeyHost = "xavi-valkey"
+	} else if a.node != nil {
+		addr := a.node.FindServiceAddr("valkey")
+		if addr != "" {
+			valkeyHost = addr
+			log.Printf("Discovered Valkey at %s", addr)
+		}
+	}
+
+	opts := container.RunOptions{
+		Image: a.Config.Images.App,
+		Name:  "xavi-app",
+		Env: []string{
+			fmt.Sprintf("POSTGRES_HOST=%s", pgHost),
+			fmt.Sprintf("VALKEY_HOST=%s", valkeyHost),
+			fmt.Sprintf("POSTGRES_PASSWORD=%s", a.Secrets.PostgresPassword),
+			fmt.Sprintf("VALKEY_PASSWORD=%s", a.Secrets.ValkeyPassword),
+		},
+		Network: NetworkName,
 	}
 
 	return a.docker.RunContainer(ctx, opts)

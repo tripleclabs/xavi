@@ -15,6 +15,13 @@ type Config struct {
 	App      App            `json:"app,omitempty"`
 	Valkey   ValkeyConfig   `json:"valkey,omitempty"`
 	Postgres PostgresConfig `json:"postgres,omitempty"`
+	Cluster  ClusterConfig  `json:"cluster,omitempty"`
+	Services []string       `json:"services,omitempty"` // Explicit list of services to run locally
+}
+
+type ClusterConfig struct {
+	BindPort int      `json:"bind_port"`
+	Peers    []string `json:"peers"`
 }
 
 type Control struct {
@@ -29,10 +36,10 @@ type Docker struct {
 }
 
 type Images struct {
-	Postgres string `json:"postgres,omitempty"`
-	Valkey   string `json:"valkey,omitempty"`
-	App      string `json:"app,omitempty"`
-	Caddy    string `json:"caddy,omitempty"`
+	App       string `json:"app,omitempty"`
+	Valkey    string `json:"valkey,omitempty"`
+	Postgres  string `json:"postgres,omitempty"`
+	BackupBot string `json:"backupbot,omitempty"`
 }
 
 type App struct {

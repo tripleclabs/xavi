@@ -53,6 +53,7 @@ type RunOptions struct {
 	Memory   int64    // in bytes
 	NanoCPUs int64    // 1e9 = 1 CPU
 	Network  string
+	Cmd      []string // Command override
 }
 
 // EnsureNetwork ensures a docker network exists.
@@ -123,6 +124,7 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 	resp, err := c.cli.ContainerCreate(ctx, &container.Config{
 		Image: image,
 		Env:   opts.Env,
+		Cmd:   opts.Cmd,
 	}, hostConfig, networkingConfig, nil, name)
 	if err != nil {
 		return fmt.Errorf("failed to create container %s: %w", name, err)

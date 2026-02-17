@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build Linux AMD64
+        run: GOOS=linux GOARCH=amd64 go build -v -o xavi-linux-amd64 ./cmd/xavi
+
+      - name: Build Linux ARM64
+        run: GOOS=linux GOARCH=arm64 go build -v -o xavi-linux-arm64 ./cmd/xavi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            xavi-linux-amd64
+            xavi-linux-arm64
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
