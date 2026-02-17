@@ -47,6 +47,8 @@ type Agent struct {
 	Secrets *secrets.Secrets
 	docker  *container.Client
 	watcher *config.Watcher
+	appConfigWatcher    *config.FileWatcher
+	backupConfigWatcher *config.FileWatcher
 	node    *cluster.Node
 }
 
@@ -104,6 +106,8 @@ func New(authBundle, configDir string) (*Agent, error) {
 		Secrets:                 sec,
 		docker:                  dockerCli,
 		watcher:                 config.NewWatcher(configPath, 5*time.Second),
+		appConfigWatcher:        config.NewFileWatcher(filepath.Join(configDir, "pulse.json"), 5*time.Second),
+		backupConfigWatcher:     config.NewFileWatcher(filepath.Join(configDir, "backup.json"), 5*time.Second),
 	}, nil
 }
 
@@ -131,8 +135,10 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}
 
-	// Start watcher
+	// Start watchers
 	go a.watcher.Run(ctx)
+	go a.appConfigWatcher.Run(ctx)
+	go a.backupConfigWatcher.Run(ctx)
 
 	// Polling loop
 	ticker := time.NewTicker(30 * time.Second)
@@ -145,6 +151,20 @@ func (a *Agent) Run(ctx context.Context) error {
 		case newCfg := <-a.watcher.Updates:
 			log.Println("Configuration update received.")
 			a.applyConfig(ctx, newCfg)
+		case <-a.appConfigWatcher.Changed:
+			log.Println("App config (pulse.json) changed, rebuilding app container...")
+			if a.Config != nil {
+				if err := a.ensureApp(ctx); err != nil {
+					log.Printf("Failed to rebuild app: %v", err)
+				}
+			}
+		case <-a.backupConfigWatcher.Changed:
+			log.Println("Backup config (backup.json) changed, rebuilding backupbot container...")
+			if a.Config != nil {
+				if err := a.ensureBackupBot(ctx); err != nil {
+					log.Printf("Failed to rebuild backupbot: %v", err)
+				}
+			}
 		case <-ticker.C:
 			if a.Config != nil {
 				// Poll API (Stub)
@@ -267,7 +287,7 @@ func (a *Agent) ensureBackupBot(ctx context.Context) error {
 	opts := container.RunOptions{
 		Image: image,
 		Name:  "xavi-backupbot",
-		Cmd:   []string{"backupbot", "--config", "/etc/backupbot/config.yaml"},
+		Cmd:   []string{"--config", "/etc/backupbot/config.yaml"},
 		Mounts: []string{
 			fmt.Sprintf("%s:/etc/backupbot/config.yaml:ro", a.TempBackupBotConfigPath),
 		},
@@ -293,14 +313,14 @@ func (a *Agent) mergeBackupBotConfig(pgHost string) error {
 	// Read backup.json (S3 config)
 	var s3Backends string
 	data, err := os.ReadFile(a.BackupConfigPath)
-	if err == nil {
-		// Simple injection logic: if backup.json exists, we assume it has the backends list.
-		// For now, let's just parse the S3 parts specifically or use it as a template.
-		// To be robust, let's assume storage.json is a JSON list of backends.
+	if err != nil {
+		log.Printf("No backup config at %s: %v (using file backend fallback)", a.BackupConfigPath, err)
+	} else {
 		var backends []map[string]interface{}
-		if err := json.Unmarshal(data, &backends); err == nil {
-			// Convert to YAML-like string (simplified)
-			for _, b := range backends {
+		if err := json.Unmarshal(data, &backends); err != nil {
+			log.Printf("Failed to parse %s: %v (expected JSON array of backend objects)", a.BackupConfigPath, err)
+		} else {
+			for i, b := range backends {
 				if s3, ok := b["s3"].(map[string]interface{}); ok {
 					s3Backends += fmt.Sprintf(`  - s3:
       bucket: %v
@@ -312,13 +332,15 @@ func (a *Agent) mergeBackupBotConfig(pgHost string) error {
       endpoint: %v
       retention: %v
 `, s3["bucket"], s3["prefix"], s3["account_id"], s3["access_key_id"], s3["secret_access_key"], s3["region"], s3["endpoint"], s3["retention"])
+				} else {
+					log.Printf("Backend entry %d in %s has no 's3' key (found keys: %v)", i, a.BackupConfigPath, mapKeys(b))
 				}
 			}
 		}
 	}
 
-	// If no S3 backends found, default to a file backend
 	if s3Backends == "" {
+		log.Printf("No S3 backends configured, falling back to local file backend")
 		s3Backends = `  - file:
       path: /backups
       retention: 1
@@ -387,18 +409,25 @@ func (a *Agent) ensurePostgres(ctx context.Context) error {
 		fmt.Sprintf("POSTGRES_DB=%s", a.Secrets.PostgresDBName),
 		fmt.Sprintf("POSTGRES_USER=%s", a.Secrets.PostgresDBUser),
 	}
-	cmd := []string{} // Default entrypoint
+	maxConns := a.Config.Postgres.MaxConnections
+	if maxConns <= 0 {
+		maxConns = 100
+	}
+
+	cmd := []string{
+		"postgres",
+		"-c", fmt.Sprintf("max_connections=%d", maxConns),
+	}
 
 	if isCluster {
 		if role == "primary" {
 			// Primary Configuration
 			// Enable replication in postgres.conf via args
-			cmd = []string{
-				"postgres",
+			cmd = append(cmd,
 				"-c", "wal_level=replica",
 				"-c", "max_wal_senders=10",
 				"-c", "hot_standby=on",
-			}
+			)
 			// Note: We need to create the replication user.
 			// For simplicity in this skeleton, we'll assume a separate init script or manual step
 			// OR inject a superuser script via /docker-entrypoint-initdb.d if volume is empty.
@@ -448,7 +477,6 @@ func (a *Agent) ensurePostgres(ctx context.Context) error {
 			// 3. Start as Standby
 			// The -R flag in basebackup creates the standby.signal.
 			// If we just start it, it should be fine if data dir is prepped.
-			cmd = []string{"postgres"} // Standard start
 		}
 	}
 
@@ -544,6 +572,14 @@ func (a *Agent) ensureApp(ctx context.Context) error {
 }
 
 // Helpers for parsing resources (stubs)
+func mapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func parseMemory(s string) int64 {
 	// TODO: fully implement unit parsing (m, g, etc.)
 	// For now, return 0 if empty
@@ -587,6 +623,12 @@ func (a *Agent) mergeAppConfig(sourcePath, destPath, pgHost, valkeyHost string) 
 		a.Secrets.PostgresDBUser, a.Secrets.PostgresPassword, pgHost, a.Secrets.PostgresDBName)
 	pgCfg := ensureMap("postgresql")
 	pgCfg["url"] = pgURL
+
+	maxConnsPerLoop := 2
+	if a.Config != nil && a.Config.App.MaxConnectionsPerEventLoop > 0 {
+		maxConnsPerLoop = a.Config.App.MaxConnectionsPerEventLoop
+	}
+	pgCfg["max_connections_per_event_loop"] = maxConnsPerLoop
 
 	// Inject Valkey URL
 	valkeyURL := fmt.Sprintf("redis://:%s@%s:6379",

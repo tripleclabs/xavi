@@ -54,7 +54,8 @@ type ContainerUIDs struct {
 }
 
 type App struct {
-	License string `json:"license,omitempty"`
+	License                    string `json:"license,omitempty"`
+	MaxConnectionsPerEventLoop int    `json:"max_connections_per_event_loop,omitempty"` // Default: 2
 }
 
 type CaddyConfig struct {
@@ -67,10 +68,11 @@ type ValkeyConfig struct {
 }
 
 type PostgresConfig struct {
-	MaxRAM      string              `json:"max_ram"`
-	MaxCPU      string              `json:"max_cpu"`
-	StoragePath string              `json:"storage_path"`
-	Replication PostgresReplication `json:"replication,omitempty"`
+	MaxRAM         string              `json:"max_ram"`
+	MaxCPU         string              `json:"max_cpu"`
+	MaxConnections int                 `json:"max_connections,omitempty"` // Default: 100
+	StoragePath    string              `json:"storage_path"`
+	Replication    PostgresReplication `json:"replication,omitempty"`
 }
 
 type PostgresReplication struct {

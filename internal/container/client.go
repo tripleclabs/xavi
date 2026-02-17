@@ -247,7 +247,9 @@ func (c *Client) Logs(ctx context.Context, name string) error {
 
 func (c *Client) compareConfig(inspect types.ContainerJSON, opts RunOptions, hostConfig *docker_container.HostConfig, exposedPorts nat.PortSet) bool {
 	// 1. Image check
-	if inspect.Config.Image != opts.Image && inspect.Image != opts.Image && !strings.HasPrefix(inspect.Image, opts.Image) {
+	// Docker normalizes short names (e.g. "nginx:latest" -> "docker.io/library/nginx:latest",
+	// "wearecococo/caddy:2.10.2" -> "docker.io/wearecococo/caddy:2.10.2")
+	if !imagesMatch(opts.Image, inspect.Config.Image) && !imagesMatch(opts.Image, inspect.Image) {
 		fmt.Printf("  [Divergence] Image mismatch: desired=%s, actual_config=%s, actual_id=%s\n", opts.Image, inspect.Config.Image, inspect.Image)
 		return false
 	}
@@ -321,6 +323,32 @@ func (c *Client) compareConfig(inspect types.ContainerJSON, opts RunOptions, hos
 	}
 
 	return true
+}
+
+// normalizeImageName expands a short Docker image reference to its fully qualified form.
+func normalizeImageName(image string) string {
+	// Strip tag/digest to count path components
+	ref := strings.Split(image, ":")[0]
+	ref = strings.Split(ref, "@")[0]
+
+	parts := strings.Split(ref, "/")
+	switch len(parts) {
+	case 1:
+		// e.g. "postgres" -> "docker.io/library/postgres"
+		return "docker.io/library/" + image
+	case 2:
+		// e.g. "wearecococo/caddy" -> "docker.io/wearecococo/caddy"
+		if !strings.Contains(parts[0], ".") {
+			return "docker.io/" + image
+		}
+		return image
+	default:
+		return image
+	}
+}
+
+func imagesMatch(a, b string) bool {
+	return normalizeImageName(a) == normalizeImageName(b)
 }
 
 func compareEnv(actual, desired []string) bool {

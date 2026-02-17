@@ -64,3 +64,53 @@ func (w *Watcher) Run(ctx context.Context) {
 		}
 	}
 }
+
+// FileWatcher watches a file for mtime changes without parsing its contents.
+type FileWatcher struct {
+	Path     string
+	Interval time.Duration
+	Changed  chan struct{}
+}
+
+// NewFileWatcher creates a new file watcher.
+func NewFileWatcher(path string, interval time.Duration) *FileWatcher {
+	return &FileWatcher{
+		Path:     path,
+		Interval: interval,
+		Changed:  make(chan struct{}, 1),
+	}
+}
+
+// Run starts the file watcher loop.
+func (fw *FileWatcher) Run(ctx context.Context) {
+	ticker := time.NewTicker(fw.Interval)
+	defer ticker.Stop()
+
+	var lastModTime time.Time
+
+	if info, err := os.Stat(fw.Path); err == nil {
+		lastModTime = info.ModTime()
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			info, err := os.Stat(fw.Path)
+			if err != nil {
+				continue
+			}
+
+			if info.ModTime().After(lastModTime) {
+				lastModTime = info.ModTime()
+				log.Printf("File %s changed.", fw.Path)
+
+				select {
+				case fw.Changed <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
+}
