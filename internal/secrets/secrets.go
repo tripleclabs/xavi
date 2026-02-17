@@ -12,9 +12,12 @@ import (
 
 // Secrets holds the generated secrets for the deployment.
 type Secrets struct {
-	PostgresPassword string `json:"postgres_password"`
-	ValkeyPassword   string `json:"valkey_password"`
-	ClusterKey       string `json:"cluster_key"` // Base64 encoded 32-byte key
+	PostgresPassword    string   `json:"postgres_password"`
+	ReplicationPassword string   `json:"replication_password"`
+	ValkeyPassword      string   `json:"valkey_password"`
+	ClusterKey          string   `json:"cluster_key"` // Base64 encoded 32-byte key
+	AppEncryptionKey    string   `json:"app_encryption_key"`
+	AppTokenSecrets     []string `json:"app_token_secrets"`
 }
 
 // LoadOrGenerate loads secrets from the given path.
@@ -24,12 +27,24 @@ func LoadOrGenerate(path string) (*Secrets, error) {
 	if err == nil {
 		// Check if any new fields are missing, if so generate them and save
 		updated := false
+		if s.ReplicationPassword == "" {
+			s.ReplicationPassword = generateRandomString(32)
+			updated = true
+		}
 		if s.ValkeyPassword == "" {
 			s.ValkeyPassword = generateRandomString(32)
 			updated = true
 		}
 		if s.ClusterKey == "" {
 			s.ClusterKey = generateRandomBytesBase64(32)
+			updated = true
+		}
+		if s.AppEncryptionKey == "" {
+			s.AppEncryptionKey = generateRandomBytesBase64(32)
+			updated = true
+		}
+		if len(s.AppTokenSecrets) == 0 {
+			s.AppTokenSecrets = []string{generateRandomString(64)}
 			updated = true
 		}
 		if updated {
@@ -45,9 +60,12 @@ func LoadOrGenerate(path string) (*Secrets, error) {
 
 	// Generate new secrets
 	s = &Secrets{
-		PostgresPassword: generateRandomString(32),
-		ValkeyPassword:   generateRandomString(32),
-		ClusterKey:       generateRandomBytesBase64(32),
+		PostgresPassword:    generateRandomString(32),
+		ReplicationPassword: generateRandomString(32),
+		ValkeyPassword:      generateRandomString(32),
+		ClusterKey:          generateRandomBytesBase64(32),
+		AppEncryptionKey:    generateRandomBytesBase64(32),
+		AppTokenSecrets:     []string{generateRandomString(64)},
 	}
 
 	if err := save(path, s); err != nil {

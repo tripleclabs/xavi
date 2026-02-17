@@ -13,14 +13,14 @@ import (
 // NodeMeta contains the metadata broadcast to other nodes.
 type NodeMeta struct {
 	Services []string `json:"services"`
-	// We don't explicitly need IP here as memberlist provides it,
-	// but can be useful if we want to advertise a different service IP.
+	PgRole   string   `json:"pg_role,omitempty"` // "primary" or "secondary"
 }
 
 // Node represents a member of the cluster.
 type Node struct {
 	list     *memberlist.Memberlist
 	services []string
+	pgRole   string
 	events   chan *NodeMeta // Internal event channel (stub for now)
 }
 
@@ -29,6 +29,7 @@ type Config struct {
 	BindPort  int
 	Peers     []string
 	Services  []string // Services running on this node
+	PgRole    string   // "primary" or "secondary"
 	SecretKey []byte   // Encryption key (must be 16, 24, or 32 bytes)
 }
 
@@ -43,7 +44,10 @@ func New(cfg Config) (*Node, error) {
 	}
 
 	// Custom delegate to manage metadata
-	meta := NodeMeta{Services: cfg.Services}
+	meta := NodeMeta{
+		Services: cfg.Services,
+		PgRole:   cfg.PgRole,
+	}
 	data, _ := json.Marshal(meta)
 
 	d := &delegate{
@@ -69,6 +73,7 @@ func New(cfg Config) (*Node, error) {
 	return &Node{
 		list:     list,
 		services: cfg.Services,
+		pgRole:   cfg.PgRole,
 	}, nil
 }
 
@@ -100,6 +105,30 @@ func (n *Node) FindServiceAddr(serviceName string) string {
 		}
 	}
 
+	return ""
+}
+
+// FindPrimary returns the address (IP) of the cluster primary.
+func (n *Node) FindPrimary() string {
+	// Check self first
+	if n.pgRole == "primary" {
+		return "127.0.0.1"
+	}
+
+	for _, member := range n.list.Members() {
+		if member.Name == n.list.LocalNode().Name {
+			continue
+		}
+
+		var meta NodeMeta
+		if err := json.Unmarshal(member.Meta, &meta); err != nil {
+			continue
+		}
+
+		if meta.PgRole == "primary" {
+			return member.Addr.String()
+		}
+	}
 	return ""
 }
 

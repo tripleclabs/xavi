@@ -1,0 +1,43 @@
+{
+    "postgresql": {
+        "url": "postgres://pulse:secret@db:5432/pulse",
+        "max_connections_per_event_loop": 4,
+        "connection_pool_timeout": 30
+    },
+    "valkey": {
+        "url": "redis://valkey:6379"
+    },
+    "token": {
+        "secrets": [
+            "current-secret",
+            "previous-secret-for-rotation"
+        ]
+    },
+    "encryption": {
+        "key": "xK8vR2mP9fQ3wN5jL7tY1hB6nU4cZ8eA2sD9gF0kM1o="
+    },
+    "mqtt": {
+        "enabled": true,
+        "host": "0.0.0.0",
+        "port": 1883
+    },
+    "smtp": {
+        "host": "smtp.example.com",
+        "port": 587,
+        "username": "apikey",
+        "password": "...",
+        "from_address": "noreply@example.com",
+        "use_tls": true
+    },
+    "license": {
+        "bundle": "...",
+        "public_key": "..."
+    },
+    "passkey": {
+        "relying_party_id": "example.com",
+        "relying_party_name": "My App",
+        "relying_party_origin": "https://example.com"
+    },
+    "secure_cookies": true,
+    "dev_mode": false
+}

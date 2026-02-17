@@ -16,6 +16,7 @@ type Config struct {
 	Valkey   ValkeyConfig   `json:"valkey,omitempty"`
 	Postgres PostgresConfig `json:"postgres,omitempty"`
 	Cluster  ClusterConfig  `json:"cluster,omitempty"`
+	Caddy    CaddyConfig    `json:"caddy,omitempty"`
 	Services []string       `json:"services,omitempty"` // Explicit list of services to run locally
 }
 
@@ -40,10 +41,15 @@ type Images struct {
 	Valkey    string `json:"valkey,omitempty"`
 	Postgres  string `json:"postgres,omitempty"`
 	BackupBot string `json:"backupbot,omitempty"`
+	Caddy     string `json:"caddy,omitempty"`
 }
 
 type App struct {
 	License string `json:"license,omitempty"`
+}
+
+type CaddyConfig struct {
+	Domain string `json:"domain"`
 }
 
 type ValkeyConfig struct {
@@ -52,9 +58,15 @@ type ValkeyConfig struct {
 }
 
 type PostgresConfig struct {
-	MaxRAM      string `json:"max_ram"`
-	MaxCPU      string `json:"max_cpu"`
-	StoragePath string `json:"storage_path"`
+	MaxRAM      string              `json:"max_ram"`
+	MaxCPU      string              `json:"max_cpu"`
+	StoragePath string              `json:"storage_path"`
+	Replication PostgresReplication `json:"replication,omitempty"`
+}
+
+type PostgresReplication struct {
+	Mode string `json:"mode"` // "single" (default) or "cluster"
+	Role string `json:"role"` // "primary" or "secondary"
 }
 
 // ParseBundle parses a base64 encoded JSON configuration bundle.

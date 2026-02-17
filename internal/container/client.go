@@ -7,11 +7,12 @@ import (
 	"os"
 
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
+	docker_container "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/go-connections/nat"
 )
 
 // Client wraps the docker client to provide a simplified interface for Xavi.
@@ -54,6 +55,7 @@ type RunOptions struct {
 	NanoCPUs int64    // 1e9 = 1 CPU
 	Network  string
 	Cmd      []string // Command override
+	Ports    []string // format: hostPort:containerPort
 }
 
 // EnsureNetwork ensures a docker network exists.
@@ -101,16 +103,32 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 	}
 
 	// Create container
-	hostConfig := &container.HostConfig{
+	hostConfig := &docker_container.HostConfig{
 		Binds: opts.Mounts,
-		Resources: container.Resources{
+		Resources: docker_container.Resources{
 			Memory:   opts.Memory,
 			NanoCPUs: opts.NanoCPUs,
 		},
-		RestartPolicy: container.RestartPolicy{
-			Name: container.RestartPolicyAlways,
+		RestartPolicy: docker_container.RestartPolicy{
+			Name: docker_container.RestartPolicyAlways,
 		},
 	}
+
+	// Port Mappings
+	exposedPorts := make(nat.PortSet)
+	portBindings := make(nat.PortMap)
+	for _, p := range opts.Ports {
+		var hostPort, containerPort string
+		n, _ := fmt.Sscanf(p, "%[^:]:%s", &hostPort, &containerPort)
+		if n == 2 {
+			cPort := nat.Port(containerPort + "/tcp")
+			exposedPorts[cPort] = struct{}{}
+			portBindings[cPort] = []nat.PortBinding{
+				{HostIP: "0.0.0.0", HostPort: hostPort},
+			}
+		}
+	}
+	hostConfig.PortBindings = portBindings
 
 	var networkingConfig *network.NetworkingConfig
 	if opts.Network != "" {
@@ -121,16 +139,17 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 		}
 	}
 
-	resp, err := c.cli.ContainerCreate(ctx, &container.Config{
-		Image: image,
-		Env:   opts.Env,
-		Cmd:   opts.Cmd,
+	resp, err := c.cli.ContainerCreate(ctx, &docker_container.Config{
+		Image:        image,
+		Env:          opts.Env,
+		Cmd:          opts.Cmd,
+		ExposedPorts: exposedPorts,
 	}, hostConfig, networkingConfig, nil, name)
 	if err != nil {
 		return fmt.Errorf("failed to create container %s: %w", name, err)
 	}
 
-	if err := c.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if err := c.cli.ContainerStart(ctx, resp.ID, docker_container.StartOptions{}); err != nil {
 		return fmt.Errorf("failed to start container %s: %w", name, err)
 	}
 
@@ -141,7 +160,7 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 // StopContainer stops and removes a container by name.
 func (c *Client) StopContainer(ctx context.Context, name string) error {
 	// check if container exists
-	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
+	containers, err := c.cli.ContainerList(ctx, docker_container.ListOptions{All: true})
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %w", err)
 	}
@@ -161,12 +180,12 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	}
 
 	fmt.Printf("Stopping container %s (%s)...\n", name, containerID)
-	if err := c.cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
+	if err := c.cli.ContainerStop(ctx, containerID, docker_container.StopOptions{}); err != nil {
 		return fmt.Errorf("failed to stop container %s: %w", name, err)
 	}
 
 	fmt.Printf("Removing container %s...\n", name)
-	if err := c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{}); err != nil {
+	if err := c.cli.ContainerRemove(ctx, containerID, docker_container.RemoveOptions{}); err != nil {
 		return fmt.Errorf("failed to remove container %s: %w", name, err)
 	}
 
@@ -176,7 +195,7 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 // Logs returns the logs of a container.
 func (c *Client) Logs(ctx context.Context, name string) error {
 	// simple implementation to just dump logs to stdout
-	out, err := c.cli.ContainerLogs(ctx, name, container.LogsOptions{ShowStdout: true, ShowStderr: true})
+	out, err := c.cli.ContainerLogs(ctx, name, docker_container.LogsOptions{ShowStdout: true, ShowStderr: true})
 	if err != nil {
 		return err
 	}
