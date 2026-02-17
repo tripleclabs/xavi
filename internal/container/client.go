@@ -236,22 +236,25 @@ func (c *Client) compareConfig(inspect types.ContainerJSON, opts RunOptions, hos
 	}
 
 	// 2. Command check
-	if len(inspect.Config.Cmd) != len(opts.Cmd) {
-		// Common case: requested nil/empty but docker returns something or vice versa
-		if !(len(opts.Cmd) == 0 && len(inspect.Config.Cmd) == 0) {
+	if len(opts.Cmd) > 0 {
+		if len(inspect.Config.Cmd) != len(opts.Cmd) {
 			fmt.Printf("  [Divergence] Command length mismatch: desired=%v, actual=%v\n", opts.Cmd, inspect.Config.Cmd)
 			return false
 		}
-	}
-	for i := range opts.Cmd {
-		if inspect.Config.Cmd[i] != opts.Cmd[i] {
-			fmt.Printf("  [Divergence] Command mismatch at index %d: desired=%s, actual=%s\n", i, opts.Cmd[i], inspect.Config.Cmd[i])
-			return false
+		for i := range opts.Cmd {
+			if inspect.Config.Cmd[i] != opts.Cmd[i] {
+				fmt.Printf("  [Divergence] Command mismatch at index %d: desired=%s, actual=%s\n", i, opts.Cmd[i], inspect.Config.Cmd[i])
+				return false
+			}
 		}
+	} else {
+		// Desired is empty (use default).
+		// If actual is ["postgres"] and we are using a postgres image, it's likely a match.
+		// For now, let's just skip the check if desired is empty to be safe against image defaults.
 	}
 
 	// 3. Env check
-	if !compareSlices(inspect.Config.Env, opts.Env) {
+	if !compareEnv(inspect.Config.Env, opts.Env) {
 		fmt.Printf("  [Divergence] Env mismatch: desired=%v, actual=%v\n", opts.Env, inspect.Config.Env)
 		return false
 	}
@@ -300,6 +303,24 @@ func (c *Client) compareConfig(inspect types.ContainerJSON, opts RunOptions, hos
 		}
 	}
 
+	return true
+}
+
+func compareEnv(actual, desired []string) bool {
+	// Docker adds many default env vars (PATH, HOSTNAME, etc.)
+	// We only care if our DESIRED env vars are present and correct.
+	for _, d := range desired {
+		found := false
+		for _, a := range actual {
+			if a == d {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
 	return true
 }
 
