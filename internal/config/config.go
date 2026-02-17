@@ -9,15 +9,16 @@ import (
 
 // Config represents the Xavi configuration.
 type Config struct {
-	Control  Control        `json:"control"`
-	Docker   Docker         `json:"docker"`
-	Images   Images         `json:"images,omitempty"`
-	App      App            `json:"app,omitempty"`
-	Valkey   ValkeyConfig   `json:"valkey,omitempty"`
-	Postgres PostgresConfig `json:"postgres,omitempty"`
-	Cluster  ClusterConfig  `json:"cluster,omitempty"`
-	Caddy    CaddyConfig    `json:"caddy,omitempty"`
-	Services []string       `json:"services,omitempty"` // Explicit list of services to run locally
+	Control       Control        `json:"control"`
+	Docker        Docker         `json:"docker"`
+	Images        Images         `json:"images,omitempty"`
+	ContainerUIDs ContainerUIDs  `json:"container_uids,omitempty"`
+	App           App            `json:"app,omitempty"`
+	Valkey        ValkeyConfig   `json:"valkey,omitempty"`
+	Postgres      PostgresConfig `json:"postgres,omitempty"`
+	Cluster       ClusterConfig  `json:"cluster,omitempty"`
+	Caddy         CaddyConfig    `json:"caddy,omitempty"`
+	Services      []string       `json:"services,omitempty"` // Explicit list of services to run locally
 }
 
 type ClusterConfig struct {
@@ -42,6 +43,14 @@ type Images struct {
 	Postgres  string `json:"postgres,omitempty"`
 	BackupBot string `json:"backupbot,omitempty"`
 	Caddy     string `json:"caddy,omitempty"`
+}
+
+type ContainerUIDs struct {
+	App       int `json:"app,omitempty"`
+	Valkey    int `json:"valkey,omitempty"`
+	Postgres  int `json:"postgres,omitempty"`
+	BackupBot int `json:"backupbot,omitempty"`
+	Caddy     int `json:"caddy,omitempty"`
 }
 
 type App struct {

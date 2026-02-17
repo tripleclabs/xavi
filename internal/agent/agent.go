@@ -33,6 +33,11 @@ type Agent struct {
 	BackupConfigPath string
 	RuntimeDir       string
 
+	// Runtime subdirectories per container
+	AppRuntimeDir       string
+	CaddyRuntimeDir     string
+	BackupBotRuntimeDir string
+
 	// Runtime file paths (generated configs)
 	TempConfigPath          string
 	CaddyConfigPath         string
@@ -71,6 +76,17 @@ func New(authBundle, configDir string) (*Agent, error) {
 		return nil, fmt.Errorf("failed to load secrets from %s: %w", secretsPath, err)
 	}
 
+	// Create subdirectories for each container
+	appRuntimeDir := filepath.Join(runtimeDir, "app")
+	caddyRuntimeDir := filepath.Join(runtimeDir, "caddy")
+	backupBotRuntimeDir := filepath.Join(runtimeDir, "backupbot")
+
+	for _, dir := range []string{appRuntimeDir, caddyRuntimeDir, backupBotRuntimeDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create runtime subdirectory %s: %w", dir, err)
+		}
+	}
+
 	return &Agent{
 		AuthBundle:              authBundle,
 		ConfigDir:               configDir,
@@ -79,9 +95,12 @@ func New(authBundle, configDir string) (*Agent, error) {
 		AppConfigPath:           filepath.Join(configDir, "pulse.json"),
 		BackupConfigPath:        filepath.Join(configDir, "backup.json"),
 		RuntimeDir:              runtimeDir,
-		TempConfigPath:          filepath.Join(runtimeDir, "app-config.json"),
-		CaddyConfigPath:         filepath.Join(runtimeDir, "caddy.json"),
-		TempBackupBotConfigPath: filepath.Join(runtimeDir, "backupbot.yaml"),
+		AppRuntimeDir:           appRuntimeDir,
+		CaddyRuntimeDir:         caddyRuntimeDir,
+		BackupBotRuntimeDir:     backupBotRuntimeDir,
+		TempConfigPath:          filepath.Join(appRuntimeDir, "config.json"),
+		CaddyConfigPath:         filepath.Join(caddyRuntimeDir, "config.json"),
+		TempBackupBotConfigPath: filepath.Join(backupBotRuntimeDir, "config.yaml"),
 		Secrets:                 sec,
 		docker:                  dockerCli,
 		watcher:                 config.NewWatcher(configPath, 5*time.Second),
@@ -240,12 +259,17 @@ func (a *Agent) ensureBackupBot(ctx context.Context) error {
 		log.Printf("Failed to merge backupbot config: %v", err)
 	}
 
+	// Set ownership of backupbot runtime directory
+	if err := a.setRuntimeDirOwnership(a.BackupBotRuntimeDir, a.Config.ContainerUIDs.BackupBot); err != nil {
+		log.Printf("Failed to set ownership for backupbot runtime dir: %v", err)
+	}
+
 	opts := container.RunOptions{
 		Image: image,
 		Name:  "xavi-backupbot",
 		Cmd:   []string{"backupbot", "--config", "/etc/backupbot/config.yaml"},
 		Mounts: []string{
-			fmt.Sprintf("%s:/etc/backupbot/config.yaml", a.TempBackupBotConfigPath),
+			fmt.Sprintf("%s:/etc/backupbot/config.yaml:ro", a.TempBackupBotConfigPath),
 		},
 		Network: NetworkName,
 	}
@@ -502,11 +526,16 @@ func (a *Agent) ensureApp(ctx context.Context) error {
 		return fmt.Errorf("failed to merge app config: %w", err)
 	}
 
+	// Set ownership of app runtime directory
+	if err := a.setRuntimeDirOwnership(a.AppRuntimeDir, a.Config.ContainerUIDs.App); err != nil {
+		log.Printf("Failed to set ownership for app runtime dir: %v", err)
+	}
+
 	opts := container.RunOptions{
 		Image: a.Config.Images.App,
 		Name:  "xavi-app",
 		Mounts: []string{
-			fmt.Sprintf("%s:%s", a.TempConfigPath, AppConfigMount),
+			fmt.Sprintf("%s:%s:ro", a.TempConfigPath, AppConfigMount),
 		},
 		Network: NetworkName,
 	}
@@ -600,6 +629,11 @@ func (a *Agent) ensureCaddy(ctx context.Context) error {
 		return fmt.Errorf("failed to generate Caddy JSON: %w", err)
 	}
 
+	// Set ownership of caddy runtime directory
+	if err := a.setRuntimeDirOwnership(a.CaddyRuntimeDir, a.Config.ContainerUIDs.Caddy); err != nil {
+		log.Printf("Failed to set ownership for caddy runtime dir: %v", err)
+	}
+
 	image := a.Config.Images.Caddy
 	if image == "" {
 		image = "wearecococo/caddy:2.10.2"
@@ -615,7 +649,7 @@ func (a *Agent) ensureCaddy(ctx context.Context) error {
 			"8883:8883",
 		},
 		Mounts: []string{
-			fmt.Sprintf("%s:/etc/caddy/config.json", a.CaddyConfigPath),
+			fmt.Sprintf("%s:/etc/caddy/config.json:ro", a.CaddyConfigPath),
 		},
 		Network: NetworkName,
 	}
@@ -680,4 +714,32 @@ func (a *Agent) generateCaddyJSON(domain, targetHost string) error {
 
 func (a *Agent) Close() error {
 	return a.docker.Close()
+}
+
+// setRuntimeDirOwnership sets the ownership of a runtime directory and its contents to the specified UID.
+// If uid is 0 or not set, ownership is not changed (runs as root).
+func (a *Agent) setRuntimeDirOwnership(dir string, uid int) error {
+	if uid == 0 {
+		return nil // Skip chown for root
+	}
+
+	// Chown the directory
+	if err := os.Chown(dir, uid, uid); err != nil {
+		return fmt.Errorf("failed to chown directory %s to uid %d: %w", dir, uid, err)
+	}
+
+	// Chown all files in the directory
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("failed to read directory %s: %w", dir, err)
+	}
+
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if err := os.Chown(path, uid, uid); err != nil {
+			return fmt.Errorf("failed to chown file %s to uid %d: %w", path, uid, err)
+		}
+	}
+
+	return nil
 }
