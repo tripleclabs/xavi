@@ -287,8 +287,18 @@ func (a *Agent) mergeBackupBotConfig(pgHost string) error {
 `
 	}
 
-	pgConn := fmt.Sprintf("postgres://postgres:%s@%s:5432/postgres?sslmode=disable",
-		a.Secrets.PostgresPassword, pgHost)
+	dbName := "postgres"
+	dbUser := "postgres"
+	if a.Config != nil {
+		if a.Config.Postgres.DBName != "" {
+			dbName = a.Config.Postgres.DBName
+		}
+		if a.Config.Postgres.DBUser != "" {
+			dbUser = a.Config.Postgres.DBUser
+		}
+	}
+	pgConn := fmt.Sprintf("postgres://%s:%s@%s:5432/%s?sslmode=disable",
+		dbUser, a.Secrets.PostgresPassword, pgHost, dbName)
 
 	yamlContent := fmt.Sprintf(`schedule: 0 2 * * *
 postgres:
@@ -344,7 +354,20 @@ func (a *Agent) ensurePostgres(ctx context.Context) error {
 	role := a.Config.Postgres.Replication.Role
 
 	// Base options
-	env := []string{fmt.Sprintf("POSTGRES_PASSWORD=%s", a.Secrets.PostgresPassword)}
+	dbName := a.Config.Postgres.DBName
+	if dbName == "" {
+		dbName = "postgres"
+	}
+	dbUser := a.Config.Postgres.DBUser
+	if dbUser == "" {
+		dbUser = "postgres"
+	}
+
+	env := []string{
+		fmt.Sprintf("POSTGRES_PASSWORD=%s", a.Secrets.PostgresPassword),
+		fmt.Sprintf("POSTGRES_DB=%s", dbName),
+		fmt.Sprintf("POSTGRES_USER=%s", dbUser),
+	}
 	cmd := []string{} // Default entrypoint
 
 	if isCluster {
@@ -536,9 +559,18 @@ func (a *Agent) mergeAppConfig(sourcePath, destPath, pgHost, valkeyHost string) 
 	}
 
 	// Inject Postgres URL
-	// Default to 'postgres' user and database as provided by standard postgres image
-	pgURL := fmt.Sprintf("postgres://postgres:%s@%s:5432/postgres?sslmode=disable",
-		a.Secrets.PostgresPassword, pgHost)
+	dbName := "postgres"
+	dbUser := "postgres"
+	if a.Config != nil {
+		if a.Config.Postgres.DBName != "" {
+			dbName = a.Config.Postgres.DBName
+		}
+		if a.Config.Postgres.DBUser != "" {
+			dbUser = a.Config.Postgres.DBUser
+		}
+	}
+	pgURL := fmt.Sprintf("postgres://%s:%s@%s:5432/%s?sslmode=disable",
+		dbUser, a.Secrets.PostgresPassword, pgHost, dbName)
 	pgCfg := ensureMap("postgresql")
 	pgCfg["url"] = pgURL
 
