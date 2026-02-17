@@ -18,19 +18,21 @@ import (
 )
 
 const (
-	NetworkName     = "xavi-net"
-	AppConfigMount  = "/etc/tripleclabs/config.json"
-	TempConfigPath  = "/tmp/xavi-app-config.json"
-	CaddyConfigPath = "/tmp/caddy.json"
+	NetworkName             = "xavi-net"
+	AppConfigMount          = "/etc/tripleclabs/config.json"
+	TempConfigPath          = "/tmp/xavi-app-config.json"
+	CaddyConfigPath         = "/tmp/caddy.json"
+	TempBackupBotConfigPath = "/tmp/backupbot.yaml"
 )
 
 // Agent manages the local deployment.
 type Agent struct {
-	AuthBundle    string // Optional initial bundle from CLI
-	ConfigDir     string
-	ConfigPath    string
-	SecretsPath   string
-	AppConfigPath string
+	AuthBundle       string // Optional initial bundle from CLI
+	ConfigDir        string
+	ConfigPath       string
+	SecretsPath      string
+	AppConfigPath    string
+	BackupConfigPath string
 
 	Config  *config.Config
 	Secrets *secrets.Secrets
@@ -60,14 +62,15 @@ func New(authBundle, configDir string) (*Agent, error) {
 	}
 
 	return &Agent{
-		AuthBundle:    authBundle,
-		ConfigDir:     configDir,
-		ConfigPath:    configPath,
-		SecretsPath:   secretsPath,
-		AppConfigPath: filepath.Join(configDir, "pulse.json"),
-		Secrets:       sec,
-		docker:        dockerCli,
-		watcher:       config.NewWatcher(configPath, 5*time.Second),
+		AuthBundle:       authBundle,
+		ConfigDir:        configDir,
+		ConfigPath:       configPath,
+		SecretsPath:      secretsPath,
+		AppConfigPath:    filepath.Join(configDir, "pulse.json"),
+		BackupConfigPath: filepath.Join(configDir, "backup.json"),
+		Secrets:          sec,
+		docker:           dockerCli,
+		watcher:          config.NewWatcher(configPath, 5*time.Second),
 	}, nil
 }
 
@@ -219,12 +222,16 @@ func (a *Agent) ensureBackupBot(ctx context.Context) error {
 		image = "wearecococo/backupbot:latest"
 	}
 
+	if err := a.mergeBackupBotConfig("xavi-postgres"); err != nil {
+		log.Printf("Failed to merge backupbot config: %v", err)
+	}
+
 	opts := container.RunOptions{
 		Image: image,
 		Name:  "xavi-backupbot",
-		Env: []string{
-			"POSTGRES_HOST=xavi-postgres",
-			fmt.Sprintf("POSTGRES_PASSWORD=%s", a.Secrets.PostgresPassword),
+		Cmd:   []string{"backupbot", "--config", "/etc/backupbot/config.yaml"},
+		Mounts: []string{
+			fmt.Sprintf("%s:/etc/backupbot/config.yaml", TempBackupBotConfigPath),
 		},
 		Network: NetworkName,
 	}
@@ -242,6 +249,54 @@ func (a *Agent) isServiceEnabled(name string) bool {
 		}
 	}
 	return false
+}
+
+func (a *Agent) mergeBackupBotConfig(pgHost string) error {
+	// Read backup.json (S3 config)
+	var s3Backends string
+	data, err := os.ReadFile(a.BackupConfigPath)
+	if err == nil {
+		// Simple injection logic: if backup.json exists, we assume it has the backends list.
+		// For now, let's just parse the S3 parts specifically or use it as a template.
+		// To be robust, let's assume storage.json is a JSON list of backends.
+		var backends []map[string]interface{}
+		if err := json.Unmarshal(data, &backends); err == nil {
+			// Convert to YAML-like string (simplified)
+			for _, b := range backends {
+				if s3, ok := b["s3"].(map[string]interface{}); ok {
+					s3Backends += fmt.Sprintf(`  - s3:
+      bucket: %v
+      prefix: %v
+      account_id: %v
+      access_key_id: %v
+      secret_access_key: %v
+      region: %v
+      endpoint: %v
+      retention: %v
+`, s3["bucket"], s3["prefix"], s3["account_id"], s3["access_key_id"], s3["secret_access_key"], s3["region"], s3["endpoint"], s3["retention"])
+				}
+			}
+		}
+	}
+
+	// If no S3 backends found, default to a file backend
+	if s3Backends == "" {
+		s3Backends = `  - file:
+      path: /backups
+      retention: 1
+`
+	}
+
+	pgConn := fmt.Sprintf("postgres://postgres:%s@%s:5432/postgres?sslmode=disable",
+		a.Secrets.PostgresPassword, pgHost)
+
+	yamlContent := fmt.Sprintf(`schedule: 0 2 * * *
+postgres:
+  connection_string: %s
+backends:
+%s`, pgConn, s3Backends)
+
+	return os.WriteFile(TempBackupBotConfigPath, []byte(yamlContent), 0644)
 }
 
 func (a *Agent) ensureValkey(ctx context.Context) error {
