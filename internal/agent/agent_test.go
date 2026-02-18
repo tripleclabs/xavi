@@ -79,9 +79,9 @@ func TestMergeAppConfig(t *testing.T) {
 		t.Errorf("postgresql.url = %v, want %v", pg["url"], expectedPG)
 	}
 
-	// Check other Postgres fields preserved
-	if val, ok := pg["max_connections_per_event_loop"].(float64); !ok || val != 4 {
-		t.Errorf("postgresql.max_connections_per_event_loop = %v, want 4", pg["max_connections_per_event_loop"])
+	// Check max_connections_per_event_loop is set to default (2) when Config is nil
+	if val, ok := pg["max_connections_per_event_loop"].(float64); !ok || val != 2 {
+		t.Errorf("postgresql.max_connections_per_event_loop = %v, want 2", pg["max_connections_per_event_loop"])
 	}
 
 	// Check Valkey URL
