@@ -9,12 +9,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/3clabs/xavi/internal/cluster"
 	"github.com/3clabs/xavi/internal/config"
 	"github.com/3clabs/xavi/internal/container"
 	"github.com/3clabs/xavi/internal/secrets"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -285,9 +289,11 @@ func (a *Agent) ensureBackupBot(ctx context.Context) error {
 	}
 
 	opts := container.RunOptions{
-		Image: image,
-		Name:  "xavi-backupbot",
-		Cmd:   []string{"--config", "/etc/backupbot/config.yaml"},
+		Image:    image,
+		Name:     "xavi-backupbot",
+		Cmd:      []string{"--config", "/etc/backupbot/config.yaml"},
+		Memory:   128 * 1024 * 1024, // 128MB
+		NanoCPUs: 250000000,         // 0.25 CPU
 		Mounts: []string{
 			fmt.Sprintf("%s:/etc/backupbot/config.yaml:ro", a.TempBackupBotConfigPath),
 		},
@@ -309,54 +315,69 @@ func (a *Agent) isServiceEnabled(name string) bool {
 	return false
 }
 
+type backupBotConfig struct {
+	Schedule string            `yaml:"schedule"`
+	Postgres backupBotPgConfig `yaml:"postgres"`
+	Backends []backupBackend   `yaml:"backends"`
+}
+
+type backupBotPgConfig struct {
+	ConnectionString string `yaml:"connection_string"`
+}
+
+type backupBackend struct {
+	File *backupFileBackend `yaml:"file,omitempty"`
+	S3   *backupS3Backend   `yaml:"s3,omitempty"`
+}
+
+type backupFileBackend struct {
+	Path      string `yaml:"path"`
+	Retention int    `yaml:"retention"`
+}
+
+type backupS3Backend struct {
+	Bucket         string `yaml:"bucket"`
+	Prefix         string `yaml:"prefix,omitempty"`
+	AccountID      string `yaml:"account_id,omitempty"`
+	AccessKeyID    string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key"`
+	Region         string `yaml:"region,omitempty"`
+	Endpoint       string `yaml:"endpoint,omitempty"`
+	Retention      int    `yaml:"retention"`
+}
+
 func (a *Agent) mergeBackupBotConfig(pgHost string) error {
-	// Read backup.json (S3 config)
-	var s3Backends string
+	var backends []backupBackend
+
 	data, err := os.ReadFile(a.BackupConfigPath)
 	if err != nil {
 		log.Printf("No backup config at %s: %v (using file backend fallback)", a.BackupConfigPath, err)
 	} else {
-		var backends []map[string]interface{}
-		if err := json.Unmarshal(data, &backends); err != nil {
-			log.Printf("Failed to parse %s: %v (expected JSON array of backend objects)", a.BackupConfigPath, err)
-		} else {
-			for i, b := range backends {
-				if s3, ok := b["s3"].(map[string]interface{}); ok {
-					s3Backends += fmt.Sprintf(`  - s3:
-      bucket: %v
-      prefix: %v
-      account_id: %v
-      access_key_id: %v
-      secret_access_key: %v
-      region: %v
-      endpoint: %v
-      retention: %v
-`, s3["bucket"], s3["prefix"], s3["account_id"], s3["access_key_id"], s3["secret_access_key"], s3["region"], s3["endpoint"], s3["retention"])
-				} else {
-					log.Printf("Backend entry %d in %s has no 's3' key (found keys: %v)", i, a.BackupConfigPath, mapKeys(b))
-				}
-			}
-		}
+		backends = parseBackupConfig(data, a.BackupConfigPath)
 	}
 
-	if s3Backends == "" {
+	if len(backends) == 0 {
 		log.Printf("No S3 backends configured, falling back to local file backend")
-		s3Backends = `  - file:
-      path: /backups
-      retention: 1
-`
+		backends = []backupBackend{
+			{File: &backupFileBackend{Path: "/backups", Retention: 1}},
+		}
 	}
 
 	pgConn := fmt.Sprintf("postgres://%s:%s@%s:5432/%s?sslmode=disable",
 		a.Secrets.PostgresDBUser, a.Secrets.PostgresPassword, pgHost, a.Secrets.PostgresDBName)
 
-	yamlContent := fmt.Sprintf(`schedule: 0 2 * * *
-postgres:
-  connection_string: %s
-backends:
-%s`, pgConn, s3Backends)
+	cfg := backupBotConfig{
+		Schedule: "0 2 * * *",
+		Postgres: backupBotPgConfig{ConnectionString: pgConn},
+		Backends: backends,
+	}
 
-	return os.WriteFile(a.TempBackupBotConfigPath, []byte(yamlContent), 0600)
+	yamlContent, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal backupbot config: %w", err)
+	}
+
+	return os.WriteFile(a.TempBackupBotConfigPath, yamlContent, 0600)
 }
 
 func (a *Agent) ensureValkey(ctx context.Context) error {
@@ -559,9 +580,14 @@ func (a *Agent) ensureApp(ctx context.Context) error {
 		log.Printf("Failed to set ownership for app runtime dir: %v", err)
 	}
 
+	appMem := parseMemory(a.Config.App.MaxRAM)
+	appCPU := parseCPU(a.Config.App.MaxCPU)
+
 	opts := container.RunOptions{
-		Image: a.Config.Images.App,
-		Name:  "xavi-app",
+		Image:    a.Config.Images.App,
+		Name:     "xavi-app",
+		Memory:   appMem,
+		NanoCPUs: appCPU,
 		Mounts: []string{
 			fmt.Sprintf("%s:%s:ro", a.TempConfigPath, AppConfigMount),
 		},
@@ -572,6 +598,44 @@ func (a *Agent) ensureApp(ctx context.Context) error {
 }
 
 // Helpers for parsing resources (stubs)
+const defaultS3Retention = 30
+
+// parseBackupConfig parses backup.json in two formats:
+//   - Object: {"bucket": "...", "access_key_id": "...", ...} — single S3 backend
+//   - Array:  [{"s3": {"bucket": "...", ...}}, ...] — multiple backends
+func parseBackupConfig(data []byte, path string) []backupBackend {
+	// Try as a flat S3 credentials object first
+	var single backupS3Backend
+	if err := json.Unmarshal(data, &single); err != nil {
+		log.Printf("Failed to parse %s: %v", path, err)
+		return nil
+	}
+
+	if single.Bucket != "" {
+		if single.Retention <= 0 {
+			single.Retention = defaultS3Retention
+		}
+		return []backupBackend{{S3: &single}}
+	}
+
+	// Otherwise try as an array of backends
+	var backends []backupBackend
+	if err := json.Unmarshal(data, &backends); err != nil {
+		log.Printf("Failed to parse %s as array: %v (expected object with 'bucket' or array of backends)", path, err)
+		return nil
+	}
+
+	for i := range backends {
+		if backends[i].S3 != nil && backends[i].S3.Retention <= 0 {
+			backends[i].S3.Retention = defaultS3Retention
+		}
+		if backends[i].File != nil && backends[i].File.Retention <= 0 {
+			backends[i].File.Retention = 1
+		}
+	}
+	return backends
+}
+
 func mapKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -580,15 +644,44 @@ func mapKeys(m map[string]interface{}) []string {
 	return keys
 }
 
+// parseMemory parses a memory string like "512m", "1g", "256k" into bytes.
 func parseMemory(s string) int64 {
-	// TODO: fully implement unit parsing (m, g, etc.)
-	// For now, return 0 if empty
-	return 0
+	if s == "" {
+		return 0
+	}
+	s = strings.TrimSpace(strings.ToLower(s))
+
+	var multiplier int64 = 1
+	if strings.HasSuffix(s, "g") {
+		multiplier = 1024 * 1024 * 1024
+		s = strings.TrimSuffix(s, "g")
+	} else if strings.HasSuffix(s, "m") {
+		multiplier = 1024 * 1024
+		s = strings.TrimSuffix(s, "m")
+	} else if strings.HasSuffix(s, "k") {
+		multiplier = 1024
+		s = strings.TrimSuffix(s, "k")
+	}
+
+	val, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		log.Printf("Failed to parse memory value %q: %v", s, err)
+		return 0
+	}
+	return int64(val * float64(multiplier))
 }
 
+// parseCPU parses a CPU string like "0.5", "1.0", "2" into NanoCPUs.
 func parseCPU(s string) int64 {
-	// TODO: fully implement float parsing * 1e9
-	return 0
+	if s == "" {
+		return 0
+	}
+	val, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		log.Printf("Failed to parse CPU value %q: %v", s, err)
+		return 0
+	}
+	return int64(val * 1e9)
 }
 
 func (a *Agent) mergeAppConfig(sourcePath, destPath, pgHost, valkeyHost string) error {
@@ -682,9 +775,11 @@ func (a *Agent) ensureCaddy(ctx context.Context) error {
 	}
 
 	opts := container.RunOptions{
-		Image: image,
-		Name:  "xavi-caddy",
-		Cmd:   []string{"caddy", "run", "--config", "/etc/caddy/config.json"},
+		Image:    image,
+		Name:     "xavi-caddy",
+		Memory:   64 * 1024 * 1024, // 64MB
+		NanoCPUs: 250000000,        // 0.25 CPU
+		Cmd:      []string{"caddy", "run", "--config", "/etc/caddy/config.json"},
 		Ports: []string{
 			"80:80",
 			"443:443",
@@ -700,10 +795,6 @@ func (a *Agent) ensureCaddy(ctx context.Context) error {
 }
 
 func (a *Agent) generateCaddyJSON(domain, targetHost string) error {
-	// Simple JSON template for HTTP + L4 MQTTS
-	// Note: In a production scenario, we'd use structs and json.Marshal
-	// but for this implementation we'll use a template string for clarity.
-
 	jsonTpl := `{
 	"apps": {
 		"http": {

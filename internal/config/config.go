@@ -56,6 +56,8 @@ type ContainerUIDs struct {
 type App struct {
 	License                    string `json:"license,omitempty"`
 	MaxConnectionsPerEventLoop int    `json:"max_connections_per_event_loop,omitempty"` // Default: 2
+	MaxRAM                     string `json:"max_ram,omitempty"`
+	MaxCPU                     string `json:"max_cpu,omitempty"`
 }
 
 type CaddyConfig struct {
