@@ -849,16 +849,43 @@ func (a *Agent) Close() error {
 	return a.docker.Close()
 }
 
-// setRuntimeDirOwnership sets the ownership of a runtime directory and its contents to the specified UID.
-// If uid is 0 or not set, ownership is not changed (runs as root).
-func (a *Agent) setRuntimeDirOwnership(dir string, uid int) error {
+// parseUID parses a uid string of the form "101" or "101:103" into uid and gid.
+// If only a uid is provided, gid is set equal to uid.
+// Returns 0, 0 if the string is empty.
+func parseUID(s string) (uid, gid int, err error) {
+	if s == "" {
+		return 0, 0, nil
+	}
+	parts := strings.SplitN(s, ":", 2)
+	uid, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid uid %q: %w", parts[0], err)
+	}
+	if len(parts) == 2 {
+		gid, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid gid %q: %w", parts[1], err)
+		}
+	} else {
+		gid = uid
+	}
+	return uid, gid, nil
+}
+
+// setRuntimeDirOwnership sets the ownership of a runtime directory and its contents.
+// spec is a uid string of the form "101" or "101:103". If empty or "0", ownership is not changed.
+func (a *Agent) setRuntimeDirOwnership(dir string, spec config.UIDSpec) error {
+	uid, gid, err := parseUID(string(spec))
+	if err != nil {
+		return fmt.Errorf("invalid uid spec %q: %w", spec, err)
+	}
 	if uid == 0 {
-		return nil // Skip chown for root
+		return nil // Skip chown for root or unset
 	}
 
 	// Chown the directory
-	if err := os.Chown(dir, uid, uid); err != nil {
-		return fmt.Errorf("failed to chown directory %s to uid %d: %w", dir, uid, err)
+	if err := os.Chown(dir, uid, gid); err != nil {
+		return fmt.Errorf("failed to chown directory %s to %d:%d: %w", dir, uid, gid, err)
 	}
 
 	// Chown all files in the directory
@@ -869,8 +896,8 @@ func (a *Agent) setRuntimeDirOwnership(dir string, uid int) error {
 
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
-		if err := os.Chown(path, uid, uid); err != nil {
-			return fmt.Errorf("failed to chown file %s to uid %d: %w", path, uid, err)
+		if err := os.Chown(path, uid, gid); err != nil {
+			return fmt.Errorf("failed to chown file %s to %d:%d: %w", path, uid, gid, err)
 		}
 	}
 

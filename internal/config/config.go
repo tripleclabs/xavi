@@ -5,7 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 )
+
+// UIDSpec holds a uid or uid:gid pair and accepts either a JSON string ("101" or
+// "101:103") or a plain JSON integer (101) for backwards compatibility.
+type UIDSpec string
+
+func (u *UIDSpec) UnmarshalJSON(data []byte) error {
+	// Try string first ("101" or "101:103")
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*u = UIDSpec(s)
+		return nil
+	}
+	// Fall back to integer (101)
+	var n int
+	if err := json.Unmarshal(data, &n); err != nil {
+		return fmt.Errorf("uid spec must be a string or integer, got %s", data)
+	}
+	*u = UIDSpec(strconv.Itoa(n))
+	return nil
+}
 
 // Config represents the Xavi configuration.
 type Config struct {
@@ -46,11 +67,11 @@ type Images struct {
 }
 
 type ContainerUIDs struct {
-	App       int `json:"app,omitempty"`
-	Valkey    int `json:"valkey,omitempty"`
-	Postgres  int `json:"postgres,omitempty"`
-	BackupBot int `json:"backupbot,omitempty"`
-	Caddy     int `json:"caddy,omitempty"`
+	App       UIDSpec `json:"app,omitempty"`
+	Valkey    UIDSpec `json:"valkey,omitempty"`
+	Postgres  UIDSpec `json:"postgres,omitempty"`
+	BackupBot UIDSpec `json:"backupbot,omitempty"`
+	Caddy     UIDSpec `json:"caddy,omitempty"`
 }
 
 type App struct {
