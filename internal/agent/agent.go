@@ -749,6 +749,12 @@ func (a *Agent) mergeAppConfig(sourcePath, destPath, pgHost, valkeyHost string) 
 	tokenCfg := ensureMap("token")
 	tokenCfg["secrets"] = a.Secrets.AppTokenSecrets
 
+	// Inject License Bundle
+	if a.Config != nil && a.Config.App.License != "" {
+		licenseCfg := ensureMap("license")
+		licenseCfg["bundle"] = a.Config.App.License
+	}
+
 	// Write merged config to temp file
 	newData, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
