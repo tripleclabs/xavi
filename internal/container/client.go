@@ -245,6 +245,19 @@ func (c *Client) Logs(ctx context.Context, name string) error {
 	return nil
 }
 
+// IsRunning reports whether the named container exists and has State.Running == true.
+// Returns (false, nil) when the container does not exist.
+func (c *Client) IsRunning(ctx context.Context, name string) (bool, error) {
+	inspect, err := c.cli.ContainerInspect(ctx, name)
+	if err != nil {
+		if client.IsErrNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to inspect container %s: %w", name, err)
+	}
+	return inspect.State.Running, nil
+}
+
 func (c *Client) compareConfig(inspect types.ContainerJSON, opts RunOptions, hostConfig *docker_container.HostConfig, exposedPorts nat.PortSet) bool {
 	// 1. Image check
 	// Docker normalizes short names (e.g. "nginx:latest" -> "docker.io/library/nginx:latest",

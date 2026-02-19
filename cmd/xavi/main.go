@@ -7,16 +7,20 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/3clabs/xavi/internal/agent"
+	sentry "github.com/getsentry/sentry-go"
 )
 
 func main() {
 	var authToken string
 	var configDir string
+	var sentryDSN string
 	flag.StringVar(&authToken, "auth", "", "Authentication token for the Xavi agent")
 	flag.StringVar(&configDir, "config-dir", "/etc/tripleclabs", "Directory for configuration files")
 	flag.StringVar(&configDir, "c", "/etc/tripleclabs", "Directory for configuration files (shorthand)")
+	flag.StringVar(&sentryDSN, "sentry-dsn", "", "Sentry DSN for error reporting")
 	flag.Parse()
 
 	// Handle the case where -c is used but --config-dir is also present (or vice versa)
@@ -26,6 +30,19 @@ func main() {
 			configDir = f.Value.String()
 		}
 	})
+
+	if sentryDSN == "" {
+		sentryDSN = os.Getenv("SENTRY_DSN")
+	}
+
+	if sentryDSN != "" {
+		if err := sentry.Init(sentry.ClientOptions{Dsn: sentryDSN}); err != nil {
+			log.Printf("Sentry initialization failed: %v", err)
+		} else {
+			defer sentry.Flush(2 * time.Second)
+			log.Println("Sentry initialized.")
+		}
+	}
 
 	// Setup signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

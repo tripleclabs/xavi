@@ -17,6 +17,7 @@ import (
 	"github.com/3clabs/xavi/internal/config"
 	"github.com/3clabs/xavi/internal/container"
 	"github.com/3clabs/xavi/internal/secrets"
+	sentry "github.com/getsentry/sentry-go"
 
 	"gopkg.in/yaml.v3"
 )
@@ -148,6 +149,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
+	healthTicker := time.NewTicker(60 * time.Second)
+	defer healthTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -173,6 +177,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			if a.Config != nil {
 				// Poll API (Stub)
 				log.Println("Polling API for release updates...")
+			}
+		case <-healthTicker.C:
+			if a.Config != nil {
+				a.runHealthChecks(ctx)
 			}
 		}
 	}
@@ -792,6 +800,36 @@ func (a *Agent) ensureCaddy(ctx context.Context) error {
 	}
 
 	return a.docker.RunContainer(ctx, opts)
+}
+
+func (a *Agent) runHealthChecks(ctx context.Context) {
+	type check struct {
+		name    string
+		service string
+		ensure  func(context.Context) error
+	}
+	checks := []check{
+		{"xavi-app", "app", a.ensureApp},
+		{"xavi-caddy", "app", a.ensureCaddy},
+	}
+	for _, hc := range checks {
+		if !a.isServiceEnabled(hc.service) {
+			continue
+		}
+		running, err := a.docker.IsRunning(ctx, hc.name)
+		if err != nil {
+			log.Printf("Health check error for %s: %v", hc.name, err)
+			continue
+		}
+		if !running {
+			msg := fmt.Sprintf("Container %s is not running; triggering reconciliation", hc.name)
+			log.Println(msg)
+			sentry.CaptureMessage(msg)
+			if err := hc.ensure(ctx); err != nil {
+				log.Printf("Failed to recover %s: %v", hc.name, err)
+			}
+		}
+	}
 }
 
 func (a *Agent) generateCaddyJSON(domain, targetHost string) error {
