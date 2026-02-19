@@ -38,7 +38,7 @@ type Config struct {
 	Valkey        ValkeyConfig   `json:"valkey,omitempty"`
 	Postgres      PostgresConfig `json:"postgres,omitempty"`
 	Cluster       ClusterConfig  `json:"cluster,omitempty"`
-	Caddy         CaddyConfig    `json:"caddy,omitempty"`
+	Traefik       TraefikConfig  `json:"traefik,omitempty"`
 	Services      []string       `json:"services,omitempty"` // Explicit list of services to run locally
 }
 
@@ -63,7 +63,7 @@ type Images struct {
 	Valkey    string `json:"valkey,omitempty"`
 	Postgres  string `json:"postgres,omitempty"`
 	BackupBot string `json:"backupbot,omitempty"`
-	Caddy     string `json:"caddy,omitempty"`
+	Traefik   string `json:"traefik,omitempty"`
 }
 
 type ContainerUIDs struct {
@@ -71,7 +71,7 @@ type ContainerUIDs struct {
 	Valkey    UIDSpec `json:"valkey,omitempty"`
 	Postgres  UIDSpec `json:"postgres,omitempty"`
 	BackupBot UIDSpec `json:"backupbot,omitempty"`
-	Caddy     UIDSpec `json:"caddy,omitempty"`
+	Traefik   UIDSpec `json:"traefik,omitempty"`
 }
 
 type App struct {
@@ -81,8 +81,9 @@ type App struct {
 	MaxCPU                     string `json:"max_cpu,omitempty"`
 }
 
-type CaddyConfig struct {
+type TraefikConfig struct {
 	Domain string `json:"domain"`
+	Email  string `json:"email"` // ACME registration email
 }
 
 type ValkeyConfig struct {

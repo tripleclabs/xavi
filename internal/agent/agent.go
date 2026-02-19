@@ -39,14 +39,16 @@ type Agent struct {
 	RuntimeDir       string
 
 	// Runtime subdirectories per container
-	AppRuntimeDir       string
-	CaddyRuntimeDir     string
-	BackupBotRuntimeDir string
+	AppRuntimeDir         string
+	TraefikRuntimeDir     string
+	BackupBotRuntimeDir   string
 
 	// Runtime file paths (generated configs)
-	TempConfigPath          string
-	CaddyConfigPath         string
-	TempBackupBotConfigPath string
+	TempConfigPath              string
+	TraefikStaticConfigPath     string
+	TraefikDynamicConfigPath    string
+	TraefikACMEPath             string
+	TempBackupBotConfigPath     string
 
 	Config  *config.Config
 	Secrets *secrets.Secrets
@@ -85,29 +87,31 @@ func New(authBundle, configDir string) (*Agent, error) {
 
 	// Create subdirectories for each container
 	appRuntimeDir := filepath.Join(runtimeDir, "app")
-	caddyRuntimeDir := filepath.Join(runtimeDir, "caddy")
+	traefikRuntimeDir := filepath.Join(runtimeDir, "traefik")
 	backupBotRuntimeDir := filepath.Join(runtimeDir, "backupbot")
 
-	for _, dir := range []string{appRuntimeDir, caddyRuntimeDir, backupBotRuntimeDir} {
+	for _, dir := range []string{appRuntimeDir, traefikRuntimeDir, backupBotRuntimeDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create runtime subdirectory %s: %w", dir, err)
 		}
 	}
 
 	return &Agent{
-		AuthBundle:              authBundle,
-		ConfigDir:               configDir,
-		ConfigPath:              configPath,
-		SecretsPath:             secretsPath,
-		AppConfigPath:           filepath.Join(configDir, "pulse.json"),
-		BackupConfigPath:        filepath.Join(configDir, "backup.json"),
-		RuntimeDir:              runtimeDir,
-		AppRuntimeDir:           appRuntimeDir,
-		CaddyRuntimeDir:         caddyRuntimeDir,
-		BackupBotRuntimeDir:     backupBotRuntimeDir,
-		TempConfigPath:          filepath.Join(appRuntimeDir, "config.json"),
-		CaddyConfigPath:         filepath.Join(caddyRuntimeDir, "config.json"),
-		TempBackupBotConfigPath: filepath.Join(backupBotRuntimeDir, "config.yaml"),
+		AuthBundle:                  authBundle,
+		ConfigDir:                   configDir,
+		ConfigPath:                  configPath,
+		SecretsPath:                 secretsPath,
+		AppConfigPath:               filepath.Join(configDir, "pulse.json"),
+		BackupConfigPath:            filepath.Join(configDir, "backup.json"),
+		RuntimeDir:                  runtimeDir,
+		AppRuntimeDir:               appRuntimeDir,
+		TraefikRuntimeDir:           traefikRuntimeDir,
+		BackupBotRuntimeDir:         backupBotRuntimeDir,
+		TempConfigPath:              filepath.Join(appRuntimeDir, "config.json"),
+		TraefikStaticConfigPath:     filepath.Join(traefikRuntimeDir, "traefik.yml"),
+		TraefikDynamicConfigPath:    filepath.Join(traefikRuntimeDir, "dynamic.yml"),
+		TraefikACMEPath:             filepath.Join(traefikRuntimeDir, "acme.json"),
+		TempBackupBotConfigPath:     filepath.Join(backupBotRuntimeDir, "config.yaml"),
 		Secrets:                 sec,
 		docker:                  dockerCli,
 		watcher:                 config.NewWatcher(configPath, 5*time.Second),
@@ -261,8 +265,8 @@ func (a *Agent) ensureInfrastructure(ctx context.Context) error {
 		log.Printf("Failed to ensure App: %v", err)
 	}
 
-	if err := a.ensureCaddy(ctx); err != nil {
-		log.Printf("Failed to ensure Caddy: %v", err)
+	if err := a.ensureTraefik(ctx); err != nil {
+		log.Printf("Failed to ensure Traefik: %v", err)
 	}
 
 	if err := a.ensureBackupBot(ctx); err != nil {
@@ -758,48 +762,134 @@ func (a *Agent) mergeAppConfig(sourcePath, destPath, pgHost, valkeyHost string) 
 	return nil
 }
 
-func (a *Agent) ensureCaddy(ctx context.Context) error {
-	if !a.isServiceEnabled("app") { // Colocated with app
+func (a *Agent) ensureTraefik(ctx context.Context) error {
+	if !a.isServiceEnabled("app") {
 		return nil
 	}
 
-	domain := a.Config.Caddy.Domain
+	domain := a.Config.Traefik.Domain
 	if domain == "" {
-		domain = "localhost" // Default for local
+		domain = "localhost"
 	}
 
-	if err := a.generateCaddyJSON(domain, "xavi-app"); err != nil {
-		return fmt.Errorf("failed to generate Caddy JSON: %w", err)
+	if err := a.generateTraefikStaticConfig(); err != nil {
+		return fmt.Errorf("failed to generate Traefik static config: %w", err)
+	}
+	if err := a.generateTraefikDynamicConfig(domain); err != nil {
+		return fmt.Errorf("failed to generate Traefik dynamic config: %w", err)
+	}
+	if err := a.ensureTraefikACMEFile(); err != nil {
+		log.Printf("Failed to ensure Traefik acme.json: %v", err)
 	}
 
-	// Set ownership of caddy runtime directory
-	if err := a.setRuntimeDirOwnership(a.CaddyRuntimeDir, a.Config.ContainerUIDs.Caddy); err != nil {
-		log.Printf("Failed to set ownership for caddy runtime dir: %v", err)
+	if err := a.setRuntimeDirOwnership(a.TraefikRuntimeDir, a.Config.ContainerUIDs.Traefik); err != nil {
+		log.Printf("Failed to set ownership for traefik runtime dir: %v", err)
 	}
 
-	image := a.Config.Images.Caddy
+	image := a.Config.Images.Traefik
 	if image == "" {
-		image = "wearecococo/caddy:2.10.2"
+		image = "traefik:v3"
 	}
 
 	opts := container.RunOptions{
 		Image:    image,
-		Name:     "xavi-caddy",
-		Memory:   64 * 1024 * 1024, // 64MB
-		NanoCPUs: 250000000,        // 0.25 CPU
-		Cmd:      []string{"caddy", "run", "--config", "/etc/caddy/config.json"},
+		Name:     "xavi-traefik",
+		Memory:   128 * 1024 * 1024, // 128MB
+		NanoCPUs: 250000000,         // 0.25 CPU
 		Ports: []string{
 			"80:80",
 			"443:443",
-			"8883:8883",
+			"8443:8443",
 		},
 		Mounts: []string{
-			fmt.Sprintf("%s:/etc/caddy/config.json:ro", a.CaddyConfigPath),
+			fmt.Sprintf("%s:/etc/traefik/traefik.yml:ro", a.TraefikStaticConfigPath),
+			fmt.Sprintf("%s:/etc/traefik/dynamic.yml:ro", a.TraefikDynamicConfigPath),
+			fmt.Sprintf("%s:/data/acme.json", a.TraefikACMEPath),
 		},
 		Network: NetworkName,
 	}
 
 	return a.docker.RunContainer(ctx, opts)
+}
+
+// ensureTraefikACMEFile creates acme.json with mode 0600 if it does not exist.
+// Traefik refuses to start if the file is missing or has incorrect permissions.
+func (a *Agent) ensureTraefikACMEFile() error {
+	if _, err := os.Stat(a.TraefikACMEPath); os.IsNotExist(err) {
+		return os.WriteFile(a.TraefikACMEPath, []byte("{}"), 0600)
+	}
+	return nil
+}
+
+func (a *Agent) generateTraefikStaticConfig() error {
+	email := a.Config.Traefik.Email
+
+	content := "entryPoints:\n" +
+		"  web:\n" +
+		"    address: \":80\"\n" +
+		"  websecure:\n" +
+		"    address: \":443\"\n" +
+		"  mqtts:\n" +
+		"    address: \":8443\"\n"
+
+	if email != "" {
+		content += "certificatesResolvers:\n" +
+			"  letsencrypt:\n" +
+			"    acme:\n" +
+			"      email: " + email + "\n" +
+			"      storage: /data/acme.json\n" +
+			"      httpChallenge:\n" +
+			"        entryPoint: web\n"
+	}
+
+	content += "providers:\n" +
+		"  file:\n" +
+		"    filename: /etc/traefik/dynamic.yml\n" +
+		"log:\n" +
+		"  level: INFO\n"
+
+	return os.WriteFile(a.TraefikStaticConfigPath, []byte(content), 0600)
+}
+
+func (a *Agent) generateTraefikDynamicConfig(domain string) error {
+	hasACME := a.Config.Traefik.Email != ""
+
+	// Traefik rule syntax uses backticks inside double-quoted YAML strings.
+	httpTLS := "      tls: {}\n"
+	tcpTLS := "      tls: {}\n"
+	if hasACME {
+		httpTLS = "      tls:\n        certResolver: letsencrypt\n"
+		tcpTLS = "      tls:\n        certResolver: letsencrypt\n"
+	}
+
+	content := "http:\n" +
+		"  routers:\n" +
+		"    app:\n" +
+		"      rule: \"Host(`" + domain + "`)\"\n" +
+		"      entryPoints:\n" +
+		"        - websecure\n" +
+		"      service: app-service\n" +
+		httpTLS +
+		"  services:\n" +
+		"    app-service:\n" +
+		"      loadBalancer:\n" +
+		"        servers:\n" +
+		"          - url: \"http://xavi-app:8080\"\n" +
+		"tcp:\n" +
+		"  routers:\n" +
+		"    mqtts:\n" +
+		"      rule: \"HostSNI(`" + domain + "`)\"\n" +
+		"      entryPoints:\n" +
+		"        - mqtts\n" +
+		"      service: mqtt-service\n" +
+		tcpTLS +
+		"  services:\n" +
+		"    mqtt-service:\n" +
+		"      loadBalancer:\n" +
+		"        servers:\n" +
+		"          - address: \"xavi-app:1883\"\n"
+
+	return os.WriteFile(a.TraefikDynamicConfigPath, []byte(content), 0600)
 }
 
 func (a *Agent) runHealthChecks(ctx context.Context) {
@@ -810,7 +900,7 @@ func (a *Agent) runHealthChecks(ctx context.Context) {
 	}
 	checks := []check{
 		{"xavi-app", "app", a.ensureApp},
-		{"xavi-caddy", "app", a.ensureCaddy},
+		{"xavi-traefik", "app", a.ensureTraefik},
 	}
 	for _, hc := range checks {
 		if !a.isServiceEnabled(hc.service) {
@@ -832,56 +922,6 @@ func (a *Agent) runHealthChecks(ctx context.Context) {
 	}
 }
 
-func (a *Agent) generateCaddyJSON(domain, targetHost string) error {
-	jsonTpl := `{
-	"apps": {
-		"http": {
-			"servers": {
-				"srv0": {
-					"listen": [":443"],
-					"routes": [
-						{
-							"match": [{"host": ["%s"]}],
-							"handle": [
-								{
-									"handler": "reverse_proxy",
-									"upstreams": [{"dial": "%s:8080"}]
-								}
-							]
-						}
-					]
-				}
-			}
-		},
-		"layer4": {
-			"servers": {
-				"mqtts": {
-					"listen": [":8883"],
-					"routes": [
-						{
-							"handle": [
-								{
-									"handler": "tls"
-								},
-								{
-									"handler": "proxy",
-									"upstreams": [{"dial": ["%s:1883"]}]
-								}
-							]
-						}
-					]
-				}
-			}
-		}
-	}
-}`
-	content := fmt.Sprintf(jsonTpl, domain, targetHost, targetHost)
-
-	if err := os.WriteFile(a.CaddyConfigPath, []byte(content), 0600); err != nil {
-		return fmt.Errorf("failed to write Caddy JSON: %w", err)
-	}
-	return nil
-}
 
 func (a *Agent) Close() error {
 	return a.docker.Close()
