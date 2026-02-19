@@ -25,7 +25,7 @@ GOOS=linux GOARCH=arm64 go build -o xavi-linux-arm64 ./cmd/xavi
 
 ## Architecture
 
-Xavi is an edge infrastructure agent that manages Docker containers (Postgres, Valkey, App, Caddy, BackupBot) and forms a distributed gossip mesh with other Xavi nodes using `hashicorp/memberlist`.
+Xavi is an edge infrastructure agent that manages Docker containers (Postgres, Valkey, App, Traefik, BackupBot) and forms a distributed gossip mesh with other Xavi nodes using `hashicorp/memberlist`.
 
 ### Package Layout
 
@@ -40,9 +40,24 @@ Xavi is an edge infrastructure agent that manages Docker containers (Postgres, V
 
 - **Convergence loop**: The agent reconciles desired state on every config change and every 30s tick. Container client compares running container config against desired and only recreates on divergence.
 - **Service discovery**: Each node broadcasts its `services` list and `pg_role` via gossip metadata. The app container gets `POSTGRES_HOST`/`VALKEY_HOST` pointed to either a local container name (e.g., `xavi-postgres`) or a remote node IP discovered via cluster.
-- **Config merging**: App config (`pulse.json`) is a template that gets Postgres URL, Valkey URL, encryption key, and token secrets injected at `/tmp/xavi-app-config.json` before mounting into the app container.
+- **Config merging**: App config (`pulse.json`) is a template that gets Postgres URL, Valkey URL, encryption key, and token secrets injected at runtime. Merged configs are written to `/var/lib/xavi/runtime/<container>/` before mounting into containers. BackupBot config (`backup.json`) is similarly merged with Postgres credentials.
 - **All containers** are on a shared Docker bridge network (`xavi-net`) with `RestartPolicyAlways`.
 
 ### Container Names
 
-All managed containers use the `xavi-` prefix: `xavi-postgres`, `xavi-valkey`, `xavi-app`, `xavi-caddy`, `xavi-backupbot`.
+All managed containers use the `xavi-` prefix: `xavi-postgres`, `xavi-valkey`, `xavi-app`, `xavi-traefik`, `xavi-backupbot`.
+
+### Runtime Directory
+
+Generated configs (merged app config, Traefik static/dynamic YAML, BackupBot config) are written to `/var/lib/xavi/runtime/` with per-container subdirectories (`app/`, `traefik/`, `backupbot/`). The agent sets file ownership based on `container_uids` config to match container user expectations.
+
+### File Watchers
+
+The agent watches three config files for hot-reload:
+- `xavi.json` — main config (triggers full `ensureInfrastructure`)
+- `pulse.json` — app config template (triggers app container rebuild only)
+- `backup.json` — backup config (triggers backupbot rebuild only)
+
+### Health Checks
+
+A 60s health ticker checks if `xavi-app` and `xavi-traefik` are running and triggers reconciliation if not. Failures are reported to Sentry.
