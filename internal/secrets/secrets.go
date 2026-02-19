@@ -30,11 +30,11 @@ func LoadOrGenerate(path string) (*Secrets, error) {
 		// Check if any new fields are missing, if so generate them and save
 		updated := false
 		if s.PostgresDBName == "" {
-			s.PostgresDBName = "pulse"
+			s.PostgresDBName = "postgres"
 			updated = true
 		}
 		if s.PostgresDBUser == "" {
-			s.PostgresDBUser = "pulse"
+			s.PostgresDBUser = "postgres"
 			updated = true
 		}
 		if s.ReplicationPassword == "" {
@@ -71,8 +71,8 @@ func LoadOrGenerate(path string) (*Secrets, error) {
 	// Generate new secrets
 	s = &Secrets{
 		PostgresPassword:    generateRandomString(32),
-		PostgresDBName:      "pulse",
-		PostgresDBUser:      "pulse",
+		PostgresDBName:      "postgres",
+		PostgresDBUser:      "postgres",
 		ReplicationPassword: generateRandomString(32),
 		ValkeyPassword:      generateRandomString(32),
 		ClusterKey:          generateRandomBytesBase64(32),
