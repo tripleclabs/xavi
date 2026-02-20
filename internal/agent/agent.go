@@ -805,7 +805,7 @@ func (a *Agent) ensureTraefik(ctx context.Context) error {
 		Ports: []string{
 			"80:80",
 			"443:443",
-			"8443:8443",
+			"8883:8883",
 		},
 		Mounts: []string{
 			fmt.Sprintf("%s:/etc/traefik/traefik.yml:ro", a.TraefikStaticConfigPath),
@@ -827,75 +827,251 @@ func (a *Agent) ensureTraefikACMEFile() error {
 	return nil
 }
 
+// --- Traefik static config structs ---
+
+type traefikStaticConfig struct {
+	EntryPoints           map[string]traefikEntryPoint       `yaml:"entryPoints"`
+	CertificatesResolvers map[string]traefikCertResolver     `yaml:"certificatesResolvers,omitempty"`
+	Providers             traefikProviders                   `yaml:"providers"`
+	Log                   traefikLog                         `yaml:"log"`
+}
+
+type traefikEntryPoint struct {
+	Address string                    `yaml:"address"`
+	HTTP    *traefikEntryPointHTTP    `yaml:"http,omitempty"`
+}
+
+type traefikEntryPointHTTP struct {
+	Redirections *traefikRedirections `yaml:"redirections,omitempty"`
+}
+
+type traefikRedirections struct {
+	EntryPoint traefikRedirectEntryPoint `yaml:"entryPoint"`
+}
+
+type traefikRedirectEntryPoint struct {
+	To     string `yaml:"to"`
+	Scheme string `yaml:"scheme"`
+}
+
+type traefikCertResolver struct {
+	ACME traefikACME `yaml:"acme"`
+}
+
+type traefikACME struct {
+	Email        string                `yaml:"email"`
+	Storage      string                `yaml:"storage"`
+	HTTPChallenge *traefikHTTPChallenge `yaml:"httpChallenge,omitempty"`
+	TLSChallenge  *struct{}             `yaml:"tlsChallenge,omitempty"`
+}
+
+type traefikHTTPChallenge struct {
+	EntryPoint string `yaml:"entryPoint"`
+}
+
+type traefikProviders struct {
+	File traefikFileProvider `yaml:"file"`
+}
+
+type traefikFileProvider struct {
+	Filename string `yaml:"filename"`
+	Watch    bool   `yaml:"watch"`
+}
+
+type traefikLog struct {
+	Level string `yaml:"level"`
+}
+
 func (a *Agent) generateTraefikStaticConfig() error {
-	email := a.Config.Traefik.Email
-
-	content := "entryPoints:\n" +
-		"  web:\n" +
-		"    address: \":80\"\n" +
-		"  websecure:\n" +
-		"    address: \":443\"\n" +
-		"  mqtts:\n" +
-		"    address: \":8443\"\n"
-
-	if email != "" {
-		content += "certificatesResolvers:\n" +
-			"  letsencrypt:\n" +
-			"    acme:\n" +
-			"      email: " + email + "\n" +
-			"      storage: /data/acme.json\n" +
-			"      httpChallenge:\n" +
-			"        entryPoint: web\n"
+	cfg := traefikStaticConfig{
+		EntryPoints: map[string]traefikEntryPoint{
+			"web": {
+				Address: ":80",
+				HTTP: &traefikEntryPointHTTP{
+					Redirections: &traefikRedirections{
+						EntryPoint: traefikRedirectEntryPoint{
+							To:     "websecure",
+							Scheme: "https",
+						},
+					},
+				},
+			},
+			"websecure": {Address: ":443"},
+			"mqtts":     {Address: ":8883"},
+		},
+		Providers: traefikProviders{
+			File: traefikFileProvider{
+				Filename: "/etc/traefik/dynamic.yml",
+				Watch:    true,
+			},
+		},
+		Log: traefikLog{Level: "INFO"},
 	}
 
-	content += "providers:\n" +
-		"  file:\n" +
-		"    filename: /etc/traefik/dynamic.yml\n" +
-		"log:\n" +
-		"  level: INFO\n"
+	if email := a.Config.Traefik.Email; email != "" {
+		cfg.CertificatesResolvers = map[string]traefikCertResolver{
+			"letsencrypt": {
+				ACME: traefikACME{
+					Email:         email,
+					Storage:       "/data/acme.json",
+					HTTPChallenge: &traefikHTTPChallenge{EntryPoint: "web"},
+					TLSChallenge:  &struct{}{},
+				},
+			},
+		}
+	}
 
-	return os.WriteFile(a.TraefikStaticConfigPath, []byte(content), 0600)
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal traefik static config: %w", err)
+	}
+	return os.WriteFile(a.TraefikStaticConfigPath, data, 0600)
+}
+
+// --- Traefik dynamic config structs ---
+
+type traefikDynamicConfig struct {
+	HTTP *traefikHTTPConfig `yaml:"http,omitempty"`
+	TCP  *traefikTCPConfig  `yaml:"tcp,omitempty"`
+	TLS  *traefikTLSConfig  `yaml:"tls,omitempty"`
+}
+
+type traefikHTTPConfig struct {
+	Routers  map[string]traefikHTTPRouter  `yaml:"routers"`
+	Services map[string]traefikHTTPService `yaml:"services"`
+}
+
+type traefikHTTPRouter struct {
+	Rule        string            `yaml:"rule"`
+	EntryPoints []string          `yaml:"entryPoints"`
+	Service     string            `yaml:"service"`
+	TLS         *traefikRouterTLS `yaml:"tls,omitempty"`
+}
+
+type traefikRouterTLS struct {
+	CertResolver string `yaml:"certResolver,omitempty"`
+}
+
+type traefikHTTPService struct {
+	LoadBalancer traefikHTTPLoadBalancer `yaml:"loadBalancer"`
+}
+
+type traefikHTTPLoadBalancer struct {
+	Servers []traefikHTTPServer `yaml:"servers"`
+}
+
+type traefikHTTPServer struct {
+	URL string `yaml:"url"`
+}
+
+type traefikTCPConfig struct {
+	Routers  map[string]traefikTCPRouter  `yaml:"routers"`
+	Services map[string]traefikTCPService `yaml:"services"`
+}
+
+type traefikTCPRouter struct {
+	Rule        string            `yaml:"rule"`
+	EntryPoints []string          `yaml:"entryPoints"`
+	Service     string            `yaml:"service"`
+	TLS         *traefikRouterTLS `yaml:"tls,omitempty"`
+}
+
+type traefikTCPService struct {
+	LoadBalancer traefikTCPLoadBalancer `yaml:"loadBalancer"`
+}
+
+type traefikTCPLoadBalancer struct {
+	Servers []traefikTCPServer `yaml:"servers"`
+}
+
+type traefikTCPServer struct {
+	Address string `yaml:"address"`
+}
+
+type traefikTLSConfig struct {
+	Stores map[string]traefikTLSStore `yaml:"stores,omitempty"`
+}
+
+type traefikTLSStore struct {
+	DefaultGeneratedCert *traefikDefaultGeneratedCert `yaml:"defaultGeneratedCert,omitempty"`
+}
+
+type traefikDefaultGeneratedCert struct {
+	Resolver *struct{}                    `yaml:"resolver"`
+	Domain   traefikDefaultGeneratedDomain `yaml:"domain"`
+}
+
+type traefikDefaultGeneratedDomain struct {
+	Main string `yaml:"main"`
 }
 
 func (a *Agent) generateTraefikDynamicConfig(domain string) error {
 	hasACME := a.Config.Traefik.Email != ""
 
-	// Traefik rule syntax uses backticks inside double-quoted YAML strings.
-	httpTLS := "      tls: {}\n"
-	tcpTLS := "      tls: {}\n"
+	httpTLS := &traefikRouterTLS{}
+	tcpTLS := &traefikRouterTLS{}
 	if hasACME {
-		httpTLS = "      tls:\n        certResolver: letsencrypt\n"
-		tcpTLS = "      tls:\n        certResolver: letsencrypt\n"
+		httpTLS = &traefikRouterTLS{CertResolver: "letsencrypt"}
+		tcpTLS = &traefikRouterTLS{CertResolver: "letsencrypt"}
 	}
 
-	content := "http:\n" +
-		"  routers:\n" +
-		"    app:\n" +
-		"      rule: \"Host(`" + domain + "`)\"\n" +
-		"      entryPoints:\n" +
-		"        - websecure\n" +
-		"      service: app-service\n" +
-		httpTLS +
-		"  services:\n" +
-		"    app-service:\n" +
-		"      loadBalancer:\n" +
-		"        servers:\n" +
-		"          - url: \"http://xavi-app:8080\"\n" +
-		"tcp:\n" +
-		"  routers:\n" +
-		"    mqtts:\n" +
-		"      rule: \"HostSNI(`" + domain + "`)\"\n" +
-		"      entryPoints:\n" +
-		"        - mqtts\n" +
-		"      service: mqtt-service\n" +
-		tcpTLS +
-		"  services:\n" +
-		"    mqtt-service:\n" +
-		"      loadBalancer:\n" +
-		"        servers:\n" +
-		"          - address: \"xavi-app:1883\"\n"
+	cfg := traefikDynamicConfig{
+		HTTP: &traefikHTTPConfig{
+			Routers: map[string]traefikHTTPRouter{
+				"app": {
+					Rule:        "Host(`" + domain + "`)",
+					EntryPoints: []string{"websecure"},
+					Service:     "app-service",
+					TLS:         httpTLS,
+				},
+			},
+			Services: map[string]traefikHTTPService{
+				"app-service": {
+					LoadBalancer: traefikHTTPLoadBalancer{
+						Servers: []traefikHTTPServer{{URL: "http://xavi-app:8080"}},
+					},
+				},
+			},
+		},
+		TCP: &traefikTCPConfig{
+			Routers: map[string]traefikTCPRouter{
+				"mqtts": {
+					Rule:        "HostSNI(`" + domain + "`)",
+					EntryPoints: []string{"mqtts"},
+					Service:     "mqtt-service",
+					TLS:         tcpTLS,
+				},
+			},
+			Services: map[string]traefikTCPService{
+				"mqtt-service": {
+					LoadBalancer: traefikTCPLoadBalancer{
+						Servers: []traefikTCPServer{{Address: "xavi-app:1883"}},
+					},
+				},
+			},
+		},
+	}
 
-	return os.WriteFile(a.TraefikDynamicConfigPath, []byte(content), 0600)
+	// When ACME is not configured, tell Traefik to generate a self-signed
+	// default certificate so TLS handshakes don't hang.
+	if !hasACME {
+		cfg.TLS = &traefikTLSConfig{
+			Stores: map[string]traefikTLSStore{
+				"default": {
+					DefaultGeneratedCert: &traefikDefaultGeneratedCert{
+						Resolver: &struct{}{},
+						Domain:   traefikDefaultGeneratedDomain{Main: domain},
+					},
+				},
+			},
+		}
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal traefik dynamic config: %w", err)
+	}
+	return os.WriteFile(a.TraefikDynamicConfigPath, data, 0600)
 }
 
 func (a *Agent) runHealthChecks(ctx context.Context) {

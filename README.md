@@ -1,6 +1,6 @@
 # Xavi
 
-Xavi is a lightweight, secure edge infrastructure agent written in Go. It manages the lifecycle of local containers (Postgres, Valkey, App, Caddy, BackupBot) and coordinates with other Xavi nodes to form a distributed mesh using a gossip protocol.
+Xavi is a lightweight, secure edge infrastructure agent written in Go. It manages the lifecycle of local containers (Postgres, Valkey, App, Traefik, BackupBot) and coordinates with other Xavi nodes to form a distributed mesh using a gossip protocol.
 
 ## Features
 
@@ -72,7 +72,12 @@ The configuration file is located at `/etc/tripleclabs/xavi.json`.
     "app": "myorg/app:latest",
     "valkey": "valkey/valkey:8",
     "postgres": "postgres:16",
-    "backupbot": "wearecococo/backupbot:latest"
+    "backupbot": "wearecococo/backupbot:latest",
+    "traefik": "traefik:v3"
+  },
+  "traefik": {
+    "domain": "app.example.com",
+    "email": "admin@example.com"
   },
   "valkey": {
     "max_ram": "512m",
