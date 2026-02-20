@@ -310,13 +310,18 @@ func (c *Client) compareConfig(inspect types.ContainerJSON, opts RunOptions, hos
 	}
 
 	// 4. Mounts check (Binds)
-	// Docker often suffixes mounts with :rw, let's normalize
+	// Docker suffixes mounts with ":rw", Podman with ":rw,rprivate,rbind" etc.
+	// Normalize by keeping only the first two colon-separated fields (source:dest).
 	normalizedActual := make([]string, len(inspect.HostConfig.Binds))
 	for i, b := range inspect.HostConfig.Binds {
-		normalizedActual[i] = strings.TrimSuffix(b, ":rw")
+		normalizedActual[i] = normalizeMountBind(b)
 	}
-	if !compareSlices(normalizedActual, opts.Mounts) {
-		fmt.Printf("  [Divergence] Mounts mismatch: desired=%v, actual_normalized=%v\n", opts.Mounts, normalizedActual)
+	normalizedDesired := make([]string, len(opts.Mounts))
+	for i, b := range opts.Mounts {
+		normalizedDesired[i] = normalizeMountBind(b)
+	}
+	if !compareSlices(normalizedActual, normalizedDesired) {
+		fmt.Printf("  [Divergence] Mounts mismatch: desired=%v, actual_normalized=%v\n", normalizedDesired, normalizedActual)
 		return false
 	}
 
@@ -376,6 +381,20 @@ func normalizeImageName(image string) string {
 	default:
 		return image
 	}
+}
+
+// normalizeMountBind strips runtime options (e.g. ":rw,rprivate,rbind")
+// from a bind mount string, keeping only source:dest and an optional :ro flag.
+func normalizeMountBind(bind string) string {
+	parts := strings.SplitN(bind, ":", 3)
+	if len(parts) < 2 {
+		return bind
+	}
+	base := parts[0] + ":" + parts[1]
+	if len(parts) == 3 && strings.HasPrefix(parts[2], "ro") {
+		return base + ":ro"
+	}
+	return base
 }
 
 func imagesMatch(a, b string) bool {

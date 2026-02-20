@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -13,15 +14,24 @@ import (
 	sentry "github.com/getsentry/sentry-go"
 )
 
+var version = "dev"
+
 func main() {
 	var authToken string
 	var configDir string
 	var sentryDSN string
+	var showVersion bool
 	flag.StringVar(&authToken, "auth", "", "Authentication token for the Xavi agent")
 	flag.StringVar(&configDir, "config-dir", "/etc/tripleclabs", "Directory for configuration files")
 	flag.StringVar(&configDir, "c", "/etc/tripleclabs", "Directory for configuration files (shorthand)")
 	flag.StringVar(&sentryDSN, "sentry-dsn", "", "Sentry DSN for error reporting")
+	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	// Handle the case where -c is used but --config-dir is also present (or vice versa)
 	// Visit will only iterate over flags that have been set.
