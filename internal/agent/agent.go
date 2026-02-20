@@ -837,21 +837,7 @@ type traefikStaticConfig struct {
 }
 
 type traefikEntryPoint struct {
-	Address string                    `yaml:"address"`
-	HTTP    *traefikEntryPointHTTP    `yaml:"http,omitempty"`
-}
-
-type traefikEntryPointHTTP struct {
-	Redirections *traefikRedirections `yaml:"redirections,omitempty"`
-}
-
-type traefikRedirections struct {
-	EntryPoint traefikRedirectEntryPoint `yaml:"entryPoint"`
-}
-
-type traefikRedirectEntryPoint struct {
-	To     string `yaml:"to"`
-	Scheme string `yaml:"scheme"`
+	Address string `yaml:"address"`
 }
 
 type traefikCertResolver struct {
@@ -885,17 +871,7 @@ type traefikLog struct {
 func (a *Agent) generateTraefikStaticConfig() error {
 	cfg := traefikStaticConfig{
 		EntryPoints: map[string]traefikEntryPoint{
-			"web": {
-				Address: ":80",
-				HTTP: &traefikEntryPointHTTP{
-					Redirections: &traefikRedirections{
-						EntryPoint: traefikRedirectEntryPoint{
-							To:     "websecure",
-							Scheme: "https",
-						},
-					},
-				},
-			},
+			"web": {Address: ":80"},
 			"websecure": {Address: ":443"},
 			"mqtts":     {Address: ":8883"},
 		},
@@ -937,15 +913,26 @@ type traefikDynamicConfig struct {
 }
 
 type traefikHTTPConfig struct {
-	Routers  map[string]traefikHTTPRouter  `yaml:"routers"`
-	Services map[string]traefikHTTPService `yaml:"services"`
+	Routers     map[string]traefikHTTPRouter     `yaml:"routers"`
+	Services    map[string]traefikHTTPService    `yaml:"services"`
+	Middlewares map[string]traefikHTTPMiddleware  `yaml:"middlewares,omitempty"`
 }
 
 type traefikHTTPRouter struct {
 	Rule        string            `yaml:"rule"`
 	EntryPoints []string          `yaml:"entryPoints"`
-	Service     string            `yaml:"service"`
+	Service     string            `yaml:"service,omitempty"`
+	Middlewares []string          `yaml:"middlewares,omitempty"`
 	TLS         *traefikRouterTLS `yaml:"tls,omitempty"`
+}
+
+type traefikHTTPMiddleware struct {
+	RedirectScheme *traefikRedirectScheme `yaml:"redirectScheme,omitempty"`
+}
+
+type traefikRedirectScheme struct {
+	Scheme    string `yaml:"scheme"`
+	Permanent bool   `yaml:"permanent"`
 }
 
 type traefikRouterTLS struct {
@@ -1024,11 +1011,24 @@ func (a *Agent) generateTraefikDynamicConfig(domain string) error {
 					Service:     "app-service",
 					TLS:         httpTLS,
 				},
+				"http-redirect": {
+					Rule:        "HostRegexp(`.+`)",
+					EntryPoints: []string{"web"},
+					Middlewares: []string{"redirect-to-https"},
+				},
 			},
 			Services: map[string]traefikHTTPService{
 				"app-service": {
 					LoadBalancer: traefikHTTPLoadBalancer{
 						Servers: []traefikHTTPServer{{URL: "http://xavi-app:8080"}},
+					},
+				},
+			},
+			Middlewares: map[string]traefikHTTPMiddleware{
+				"redirect-to-https": {
+					RedirectScheme: &traefikRedirectScheme{
+						Scheme:    "https",
+						Permanent: true,
 					},
 				},
 			},
