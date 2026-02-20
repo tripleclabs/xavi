@@ -778,10 +778,18 @@ func (a *Agent) ensureTraefik(ctx context.Context) error {
 		domain = "localhost"
 	}
 
+	// Traefik runs with host networking (bypasses Podman port forwarding
+	// issues with netavark). Since it can't join the bridge network for
+	// DNS, resolve the app container's IP on xavi-net directly.
+	appHost := a.docker.ContainerIP(ctx, "xavi-app", NetworkName)
+	if appHost == "" {
+		appHost = "xavi-app" // fallback to DNS name if app isn't running yet
+	}
+
 	if err := a.generateTraefikStaticConfig(); err != nil {
 		return fmt.Errorf("failed to generate Traefik static config: %w", err)
 	}
-	if err := a.generateTraefikDynamicConfig(domain); err != nil {
+	if err := a.generateTraefikDynamicConfig(domain, appHost); err != nil {
 		return fmt.Errorf("failed to generate Traefik dynamic config: %w", err)
 	}
 	if err := a.ensureTraefikACMEFile(); err != nil {
@@ -798,21 +806,16 @@ func (a *Agent) ensureTraefik(ctx context.Context) error {
 	}
 
 	opts := container.RunOptions{
-		Image:    image,
-		Name:     "xavi-traefik",
-		Memory:   128 * 1024 * 1024, // 128MB
-		NanoCPUs: 250000000,         // 0.25 CPU
-		Ports: []string{
-			"80:80",
-			"443:443",
-			"8883:8883",
-		},
+		Image:       image,
+		Name:        "xavi-traefik",
+		Memory:      128 * 1024 * 1024, // 128MB
+		NanoCPUs:    250000000,         // 0.25 CPU
+		HostNetwork: true,
 		Mounts: []string{
 			fmt.Sprintf("%s:/etc/traefik/traefik.yml:ro", a.TraefikStaticConfigPath),
 			fmt.Sprintf("%s:/etc/traefik/dynamic.yml:ro", a.TraefikDynamicConfigPath),
 			fmt.Sprintf("%s:/data/acme.json", a.TraefikACMEPath),
 		},
-		Network: NetworkName,
 	}
 
 	return a.docker.RunContainer(ctx, opts)
@@ -992,7 +995,7 @@ type traefikDefaultGeneratedDomain struct {
 	Main string `yaml:"main"`
 }
 
-func (a *Agent) generateTraefikDynamicConfig(domain string) error {
+func (a *Agent) generateTraefikDynamicConfig(domain, appHost string) error {
 	hasACME := a.Config.Traefik.Email != ""
 
 	httpTLS := &traefikRouterTLS{}
@@ -1021,7 +1024,7 @@ func (a *Agent) generateTraefikDynamicConfig(domain string) error {
 			Services: map[string]traefikHTTPService{
 				"app-service": {
 					LoadBalancer: traefikHTTPLoadBalancer{
-						Servers: []traefikHTTPServer{{URL: "http://xavi-app:8080"}},
+						Servers: []traefikHTTPServer{{URL: "http://" + appHost + ":8080"}},
 					},
 				},
 			},
@@ -1046,7 +1049,7 @@ func (a *Agent) generateTraefikDynamicConfig(domain string) error {
 			Services: map[string]traefikTCPService{
 				"mqtt-service": {
 					LoadBalancer: traefikTCPLoadBalancer{
-						Servers: []traefikTCPServer{{Address: "xavi-app:1883"}},
+						Servers: []traefikTCPServer{{Address: appHost + ":1883"}},
 					},
 				},
 			},

@@ -61,15 +61,16 @@ func (c *Client) Login(ctx context.Context, username, password, registryAddr str
 
 // RunOptions configuration for running a container
 type RunOptions struct {
-	Image    string
-	Name     string
-	Env      []string
-	Mounts   []string // format: /host/path:/container/path
-	Memory   int64    // in bytes
-	NanoCPUs int64    // 1e9 = 1 CPU
-	Network  string
-	Cmd      []string // Command override
-	Ports    []string // format: hostPort:containerPort
+	Image       string
+	Name        string
+	Env         []string
+	Mounts      []string // format: /host/path:/container/path
+	Memory      int64    // in bytes
+	NanoCPUs    int64    // 1e9 = 1 CPU
+	Network     string
+	Cmd         []string // Command override
+	Ports       []string // format: hostPort:containerPort
+	HostNetwork bool     // Use host networking (binds directly to host ports, no port mapping needed)
 }
 
 // EnsureNetwork ensures a docker network exists.
@@ -149,23 +150,19 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 	}
 	hostConfig.PortBindings = portBindings
 
-	// When a container has port mappings AND a custom network, Podman's
-	// netavark backend can fail to forward data through the custom bridge
-	// (TCP connects succeed but responses never arrive). Work around this
-	// by creating the container on the default network (where port
-	// forwarding works) and connecting to the custom network afterward
-	// for inter-container DNS resolution.
 	var networkingConfig *network.NetworkingConfig
 	var postStartNetwork string
-	if opts.Network != "" {
-		if len(opts.Ports) > 0 {
-			postStartNetwork = opts.Network
-		} else {
-			networkingConfig = &network.NetworkingConfig{
-				EndpointsConfig: map[string]*network.EndpointSettings{
-					opts.Network: {},
-				},
-			}
+
+	if opts.HostNetwork {
+		// Host networking: container binds directly to host interfaces.
+		// Cannot join a bridge network — use ContainerIP() to resolve
+		// backend addresses instead of relying on container DNS.
+		hostConfig.NetworkMode = "host"
+	} else if opts.Network != "" {
+		networkingConfig = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				opts.Network: {},
+			},
 		}
 	}
 
@@ -263,6 +260,19 @@ func (c *Client) Logs(ctx context.Context, name string) error {
 	return nil
 }
 
+// ContainerIP returns the IP address of a container on the given network.
+// Returns an empty string if the container is not found or not connected to the network.
+func (c *Client) ContainerIP(ctx context.Context, name, networkName string) string {
+	inspect, err := c.cli.ContainerInspect(ctx, name)
+	if err != nil {
+		return ""
+	}
+	if ep, ok := inspect.NetworkSettings.Networks[networkName]; ok && ep.IPAddress != "" {
+		return ep.IPAddress
+	}
+	return ""
+}
+
 // IsRunning reports whether the named container exists and has State.Running == true.
 // Returns (false, nil) when the container does not exist.
 func (c *Client) IsRunning(ctx context.Context, name string) (bool, error) {
@@ -325,7 +335,15 @@ func (c *Client) compareConfig(inspect types.ContainerJSON, opts RunOptions, hos
 		return false
 	}
 
-	// 5. Ports check
+	// 5. Network mode check
+	if opts.HostNetwork {
+		if inspect.HostConfig.NetworkMode != "host" {
+			fmt.Printf("  [Divergence] Network mode mismatch: desired=host, actual=%s\n", inspect.HostConfig.NetworkMode)
+			return false
+		}
+	}
+
+	// 6. Ports check
 	if len(inspect.HostConfig.PortBindings) != len(hostConfig.PortBindings) {
 		fmt.Printf("  [Divergence] Port count mismatch: desired_count=%d, actual_count=%d\n", len(hostConfig.PortBindings), len(inspect.HostConfig.PortBindings))
 		return false
