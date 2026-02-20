@@ -1012,8 +1012,9 @@ func (a *Agent) generateTraefikDynamicConfig(domain string) error {
 					TLS:         httpTLS,
 				},
 				"http-redirect": {
-					Rule:        "HostRegexp(`.+`)",
+					Rule:        "HostRegexp(`.+`) && !PathPrefix(`/.well-known/acme-challenge/`)",
 					EntryPoints: []string{"web"},
+					Service:     "app-service",
 					Middlewares: []string{"redirect-to-https"},
 				},
 			},

@@ -149,12 +149,23 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 	}
 	hostConfig.PortBindings = portBindings
 
+	// When a container has port mappings AND a custom network, Podman's
+	// netavark backend can fail to forward data through the custom bridge
+	// (TCP connects succeed but responses never arrive). Work around this
+	// by creating the container on the default network (where port
+	// forwarding works) and connecting to the custom network afterward
+	// for inter-container DNS resolution.
 	var networkingConfig *network.NetworkingConfig
+	var postStartNetwork string
 	if opts.Network != "" {
-		networkingConfig = &network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{
-				opts.Network: {},
-			},
+		if len(opts.Ports) > 0 {
+			postStartNetwork = opts.Network
+		} else {
+			networkingConfig = &network.NetworkingConfig{
+				EndpointsConfig: map[string]*network.EndpointSettings{
+					opts.Network: {},
+				},
+			}
 		}
 	}
 
@@ -192,6 +203,13 @@ func (c *Client) RunContainer(ctx context.Context, opts RunOptions) error {
 
 	if err := c.cli.ContainerStart(ctx, resp.ID, docker_container.StartOptions{}); err != nil {
 		return fmt.Errorf("failed to start container %s: %w", name, err)
+	}
+
+	// Connect to the custom network after start so inter-container DNS works.
+	if postStartNetwork != "" {
+		if err := c.cli.NetworkConnect(ctx, postStartNetwork, resp.ID, nil); err != nil {
+			return fmt.Errorf("failed to connect container %s to network %s: %w", name, postStartNetwork, err)
+		}
 	}
 
 	fmt.Printf("Container %s started with ID %s\n", name, resp.ID)
